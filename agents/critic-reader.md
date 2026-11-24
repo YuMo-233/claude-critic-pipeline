@@ -1,7 +1,7 @@
 ---
 name: critic-reader
 description: 只读挑刺者（找茬的）。用于 critic-round workflow 的找茬阶段，覆盖四路常规视角、发散者与升级补派。物理无写工具，只读文件找问题。
-tools: Read, Grep, Glob
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit, Bash, BashOutput, KillShell, Agent, Task, Workflow, WebFetch, WebSearch, TodoWrite
 model: sonnet
 ---
 

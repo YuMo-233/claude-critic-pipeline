@@ -3,12 +3,13 @@
 // 定位：只负责「找茬」，绝不修代码。干活（探索/施工/验收）由团队台本负责，
 //       本 workflow 只干挑刺这一格，产出一份结构化清单交回主代理（调度员）。
 //
-// 内部层次（正常 2 层，升级门触发则 3 层）：
-//   ① 并行扇出：N 路「找茬的」同时开跑
+// 内部层次（正常 3 层，升级门触发则 4 层）：
+//   ① 分诊：一位「分诊员」读意图+diff 判任务类型（不查文件、不改文件、只转发判断）
+//   ② 并行扇出：N 路「找茬的」同时开跑
 //      常规四路：正确性与回归 / 兼容 / 性能 / 用户体验（UX 路先枚举用户可达路径矩阵再找缺陷）
 //      外加可选的第五路「发散者」
-//   ② 汇总：一位「判卷的」去伪 + 定级 + 自主判断要不要加派
-//   ③ 可选：判卷的判定高风险 → 再派 1~2 路补充「找茬的」→ 判卷的二次汇总
+//   ③ 汇总：一位「判卷的」去伪 + 定级 + 自主判断要不要加派
+//   ④ 可选：判卷的判定高风险 → 再派 1~2 路补充「找茬的」→ 判卷的二次汇总
 //
 // 「发散者」是唯一被允许看超本 diff 范围的找茬者：它枚举同功能/同交互族的
 // 所有入口路径（拖拽→扫拖拽的全部入口，而非只盯 diff 那几行），专抓"改了这
@@ -19,8 +20,8 @@
 //   adjacentRisk      相邻风险、低置信        → 进 escalate / minor
 //
 // 硬约束（写在代码里，不靠自觉）：
-//   - 找茬的一律 agentType: 'critic-pipeline:critic-reader'（插件 agents/critic-reader.md，只读工具 + 快档模型）
-//   - 判卷的一律 agentType: 'critic-pipeline:critic-judge'（插件 agents/critic-judge.md，只读工具 + 强档模型）
+//   - 找茬的一律 agentType: 'critic-pipeline:critic-reader'（插件 agents/critic-reader.md，disallowedTools 写禁用工具 + 快档模型）
+//   - 判卷的一律 agentType: 'critic-pipeline:critic-judge'（插件 agents/critic-judge.md，disallowedTools 写禁用工具 + 强档模型）
 //   - agentType 必须带 `critic-pipeline:` 插件前缀，否则引擎只在项目本地 .claude/agents/ 里找，换仓库即报 not found
 //   - 模型写死在 agent 文件 frontmatter（model:），脚本不再逐个传 model，换档只改 .md
 //   - 每轮都是全新的一次性子代理，无记忆 —— 天然满足"换人挑刺"
@@ -28,8 +29,9 @@
 
 export const meta = {
   name: 'critic-round',
-  description: '一轮多视角挑刺：并行 N 路只读找茬（含发散者）→ 判卷去伪定级 →（可选）升级补充 → 返回结构化 findings',
+  description: '一轮多视角挑刺：分诊判任务类型 → 并行 N 路只读找茬（含发散者）→ 判卷去伪定级 →（可选）升级补充 → 返回结构化 findings',
   phases: [
+    { title: '分诊', detail: '分诊员按任务性质判类型（整理文件/新功能/修bug/重构），决定跑哪些视角' },
     { title: '找茬', detail: 'N 路只读 critic 并行，各看一个视角（发散者枚举同族入口路径）' },
     { title: '判卷', detail: '去伪存真 + 定级 + 判断是否需升级；发散发现归三类桶' },
     { title: '升级', detail: '仅在判卷判定高风险时，补派 1~2 路新视角' },
@@ -42,13 +44,52 @@ export const meta = {
 //   args.diff       字符串 —— 本轮改动（git diff 或改动摘要），必填
 //   args.intent     字符串 —— 本轮修改意图／需求，必填
 //   args.known      数组   —— 前几轮已知未修项，可选
-//   args.lenses     数组   —— 只挑这几路视角，可选；缺省=四路全开
+//   args.type       字符串 —— 任务类型：file-cleanup / feature / hotfix / refactor，可选；
+//                             不传则先由分诊员按 diff+intent 自动判断（推荐日常用不着传）
+//   args.lenses     数组   —— 手动指定视角，可选；传了就覆盖 type 展开的视角集合
 //   args.projectContext 字符串 —— 项目上下文（技术栈/版本矩阵/项目红线/领域术语），可选；
 //                                 不传则流水线保持技术栈无关，任何仓库都能跑
-//   args.diverge    布尔   —— 是否启用发散者（默认 true；false 关闭）
-//   args.escalate   布尔   —— 是否允许判卷的触发升级门，默认 true
-//   args.maxEscalate 数    —— 升级补充路数上限，默认 2
+//   args.diverge    布尔   —— 是否启用发散者，可选；不传则按 type 的 profile 决定
+//   args.escalate   布尔   —— 是否允许判卷的触发升级门，可选；不传则按 profile 决定
+//   args.maxEscalate 数    —— 升级补充路数上限，可选；不传则按 profile 决定
 // ─────────────────────────────────────────────────────────────
+
+// 任务类型 → 挑刺配置（自由编排的核心：按任务性质决定跑多重的挑刺）
+//   file-cleanup 最轻：整理文件不是行为改动，性能/兼容/发散/升级全是浪费
+//   feature/refactor 最全：常规开发与重构碰高风险面概率高，升级门开
+//   hotfix 四路+发散但关升级：求快，同族漏改靠发散者兜
+const TYPE_PROFILES = {
+  'file-cleanup': {
+    lenses: ['correctness-regression', 'ux'],
+    diverge: false,
+    escalate: false,
+    maxEscalate: 0,
+    hint: '批量整理文件、重命名、移动、格式化、删废代码等不改变行为意图的改动',
+  },
+  feature: {
+    lenses: ['correctness-regression', 'compat', 'perf', 'ux'],
+    diverge: true,
+    escalate: true,
+    maxEscalate: 2,
+    hint: '常规新功能开发、新增能力、扩展已有功能',
+  },
+  hotfix: {
+    lenses: ['correctness-regression', 'compat', 'perf', 'ux'],
+    diverge: true,
+    escalate: false,
+    maxEscalate: 0,
+    hint: '紧急修复、修 bug、修线上问题，要求快',
+  },
+  refactor: {
+    lenses: ['correctness-regression', 'compat', 'perf', 'ux'],
+    diverge: true,
+    escalate: true,
+    maxEscalate: 2,
+    hint: '重构、架构调整、大范围结构性改动',
+  },
+}
+
+const DEFAULT_TYPE = 'feature'
 
 const ALL_LENSES = [
   {
@@ -100,9 +141,6 @@ const ALL_LENSES = [
 const diff = String(args?.diff ?? '').trim()
 const intent = String(args?.intent ?? '').trim()
 const known = Array.isArray(args?.known) ? args.known : []
-const allowEscalate = args?.escalate !== false
-const diverge = args?.diverge !== false // 发散者默认常开，传 false 关闭
-const maxEscalate = Number.isFinite(args?.maxEscalate) ? Math.max(1, args.maxEscalate) : 2
 
 // 项目上下文：技术栈、版本/平台矩阵、项目红线、领域术语等。由调用方传入，
 // 不传则整套流水线保持技术栈无关（可用于任意仓库）。
@@ -116,13 +154,69 @@ if (!diff) {
   return { error: 'missing args.diff', findings: [] }
 }
 
-// 选路：显式传了 lenses 就只用那几路，否则四路全开
-let lenses = ALL_LENSES
-if (Array.isArray(args?.lenses) && args.lenses.length) {
-  const wanted = new Set(args.lenses.map(String))
-  const picked = ALL_LENSES.filter((l) => wanted.has(l.key))
-  if (picked.length) lenses = picked
+// ── 分诊：任务类型判定 ──
+// 优先用调用方显式传的 args.type；没传才请分诊员读 diff+intent 判。
+// 分诊员只看传进来的文本，不查文件、不改文件，只负责把 type 转发回来。
+const CLASSIFIER_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['type', 'reason'],
+  properties: {
+    type: { type: 'string', enum: Object.keys(TYPE_PROFILES) },
+    reason: { type: 'string', description: '一句话判定理由' },
+  },
 }
+
+const CLASSIFIER_PROMPT = `你是挑刺流水线的分诊员。你的活只有一个：读下面给出的本轮修改意图与改动内容，判断它属于哪种任务类型，然后按 schema 输出。
+
+【可选类型】
+${Object.entries(TYPE_PROFILES)
+  .map(([k, v]) => `- ${k}：${v.hint}`)
+  .join('\n')}
+
+判断只看改动性质：改的是行为逻辑还是只动文件组织、改动范围与风险面。
+拿不准时选 ${DEFAULT_TYPE}（更全面，宁多勿漏）。
+不要查文件、不要跑命令、不要修改任何东西——事实底座已经给全了。
+
+【本轮修改意图】
+${intent || '（调度员未提供，按 diff 自行推断）'}
+
+【本轮改动】
+${diff}
+
+严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
+
+// 选路优先级：显式 lenses > 显式 type > 分诊员判断
+let taskType = String(args?.type ?? '').trim()
+const wantedKeys = new Set(Array.isArray(args?.lenses) ? args.lenses.map(String) : [])
+const explicitLenses = ALL_LENSES.filter((l) => wantedKeys.has(l.key))
+const hasExplicitLenses = explicitLenses.length > 0
+
+if (!TYPE_PROFILES[taskType]) taskType = ''
+if (!taskType && !hasExplicitLenses) {
+  phase('分诊')
+  log('调用方未指定任务类型，分诊员判断中…')
+  const verdict = await agent(CLASSIFIER_PROMPT, {
+    label: '分诊:判类型',
+    phase: '分诊',
+    agentType: 'critic-pipeline:critic-reader',
+    schema: CLASSIFIER_SCHEMA,
+  })
+  taskType = TYPE_PROFILES[verdict?.type] ? verdict.type : DEFAULT_TYPE
+  log(`分诊结果：${taskType}${verdict?.reason ? ` —— ${verdict.reason}` : ''}`)
+}
+
+const profile = TYPE_PROFILES[taskType] ?? TYPE_PROFILES[DEFAULT_TYPE]
+
+// 展开 profile → 实际配置；调用方显式传的单参数永远盖过 profile
+const lenses = hasExplicitLenses
+  ? explicitLenses
+  : ALL_LENSES.filter((l) => profile.lenses.includes(l.key))
+const diverge = args?.diverge === undefined ? profile.diverge : args.diverge !== false
+const allowEscalate = args?.escalate === undefined ? profile.escalate : args.escalate !== false
+const maxEscalate = Number.isFinite(args?.maxEscalate)
+  ? Math.max(1, args.maxEscalate)
+  : profile.maxEscalate
 
 const knownBlock = known.length
   ? `\n【前几轮已知未修项（不要重复报，除非这轮又恶化了）】\n${known
@@ -388,7 +482,10 @@ const JUDGE_SCHEMA = {
 
 // ── ① 并行扇出：N 路找茬同时开跑（发散者算一路，但用独立 schema） ──
 phase('找茬')
-log(`开 ${lenses.length} 路 + ${diverge ? 1 : 0} 路发散者：${lenses.map((l) => l.name).join(' / ')}`)
+log(
+  `任务类型=${taskType || '手动'}；开 ${lenses.length} 路 + ${diverge ? 1 : 0} 路发散者` +
+    `${allowEscalate ? '（升级门开）' : '（升级门关）'}：${lenses.map((l) => l.name).join(' / ')}`
+)
 
 const thunks = lenses.map((lens) => () =>
   agent(briefing(lens), {
@@ -541,8 +638,17 @@ log(
 return {
   round: 1,
   intent,
+  // 分诊结果：taskType 为 '' 表示调用方手动指定了 lenses，未走 profile
+  type: taskType,
+  profile: {
+    lenses: profile.lenses,
+    diverge: profile.diverge,
+    escalate: profile.escalate,
+    maxEscalate: profile.maxEscalate,
+  },
   lenses: lenses.map((l) => l.name),
   diverge,
+  escalateAllowed: allowEscalate,
   confirmed: finalConfirmed,
   mustFix,
   shouldFix,
