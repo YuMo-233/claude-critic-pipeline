@@ -19,7 +19,13 @@ description: 跑一轮通用挑刺。代码改动完成后，分诊员先按任�
 
 ## 2. 调用 workflow
 
-调 `critic-round` workflow，传上面这些入参。**正常情况不要传 type / lenses / diverge / escalate** —— 交给分诊员按任务性质自动判，它自己会展开成对应视角。
+**先试名字，报错就走内联**：
+
+1. 调 `Workflow({ name: 'critic-pipeline:critic-round', args: {...} })`；
+2. 若报 `Unknown workflow`（本机 Haha 构建即如此），用 Glob 找到插件目录下最新的 `workflows/critic-round.js`（形如 `~/.claude/plugins/cache/*/critic-pipeline/*/workflows/critic-round.js`），把文件**全文**作为 `script` 传给 Workflow 工具，`args` 照旧传。
+3. `args` 传对象或 JSON 字符串都行——脚本顶部会归一解析，不用预处理。
+
+**正常情况不要传 type / lenses / diverge / escalate** —— 交给分诊员按任务性质自动判，它自己会展开成对应视角。
 
 四种任务类型对应的挑刺强度（分诊员负责判）：
 

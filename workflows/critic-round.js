@@ -39,6 +39,16 @@ export const meta = {
   ],
 }
 
+// 入参归一：本机构建实测，Workflow 工具把 args 以 JSON 字符串传进来（不是对象），
+// 直接 args?.x 永远取不到值。这里统一解析成对象，正文一律用 A。
+const A = (() => {
+  if (args && typeof args === 'object') return args
+  if (typeof args === 'string' && args.trim()) {
+    try { return JSON.parse(args) } catch (e) { return {} }
+  }
+  return {}
+})()
+
 // ─────────────────────────────────────────────────────────────
 // 入参（由调度员传）：
 //   args.diff       字符串 —— 本轮改动（git diff 或改动摘要），必填
@@ -138,13 +148,13 @@ const ALL_LENSES = [
   },
 ]
 
-const diff = String(args?.diff ?? '').trim()
-const intent = String(args?.intent ?? '').trim()
-const known = Array.isArray(args?.known) ? args.known : []
+const diff = String(A?.diff ?? '').trim()
+const intent = String(A?.intent ?? '').trim()
+const known = Array.isArray(A?.known) ? A.known : []
 
 // 项目上下文：技术栈、版本/平台矩阵、项目红线、领域术语等。由调用方传入，
 // 不传则整套流水线保持技术栈无关（可用于任意仓库）。
-const projectContext = String(args?.projectContext ?? '').trim()
+const projectContext = String(A?.projectContext ?? '').trim()
 const ctxBlock = projectContext
   ? `\n【项目上下文（调用方提供，判断时按此对齐）】\n${projectContext}\n`
   : ''
@@ -187,8 +197,8 @@ ${diff}
 严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
 
 // 选路优先级：显式 lenses > 显式 type > 分诊员判断
-let taskType = String(args?.type ?? '').trim()
-const wantedKeys = new Set(Array.isArray(args?.lenses) ? args.lenses.map(String) : [])
+let taskType = String(A?.type ?? '').trim()
+const wantedKeys = new Set(Array.isArray(A?.lenses) ? A.lenses.map(String) : [])
 const explicitLenses = ALL_LENSES.filter((l) => wantedKeys.has(l.key))
 const hasExplicitLenses = explicitLenses.length > 0
 
@@ -212,10 +222,10 @@ const profile = TYPE_PROFILES[taskType] ?? TYPE_PROFILES[DEFAULT_TYPE]
 const lenses = hasExplicitLenses
   ? explicitLenses
   : ALL_LENSES.filter((l) => profile.lenses.includes(l.key))
-const diverge = args?.diverge === undefined ? profile.diverge : args.diverge !== false
-const allowEscalate = args?.escalate === undefined ? profile.escalate : args.escalate !== false
-const maxEscalate = Number.isFinite(args?.maxEscalate)
-  ? Math.max(1, args.maxEscalate)
+const diverge = A?.diverge === undefined ? profile.diverge : A.diverge !== false
+const allowEscalate = A?.escalate === undefined ? profile.escalate : A.escalate !== false
+const maxEscalate = Number.isFinite(A?.maxEscalate)
+  ? Math.max(1, A.maxEscalate)
   : profile.maxEscalate
 
 const knownBlock = known.length

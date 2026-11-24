@@ -124,6 +124,20 @@ claude plugin install critic-pipeline@haha-connectors
 
 ## 怎么调
 
+### 调用通道（先试名字，不通就走内联）
+
+| 通道 | 写法 | 适用 |
+|---|---|---|
+| 按名字 | `Workflow({ name: 'critic-pipeline:critic-round', args })` | 标准 Claude Code（插件 workflow 会自动注册） |
+| 内联脚本 | `Read` 插件目录下 `workflows/*.js` 全文 → `Workflow({ script: <全文>, args })` | 名字查不到时的兜底（本机 Haha 构建即如此） |
+| 文件路径 | `Workflow({ scriptPath: '<插件目录>/workflows/*.js', args })` | 能执行但结果可能取不回，非必要不用 |
+
+两个脚本都在顶部把 `args` 归一：传对象或 JSON 字符串都行，**内部会自己解析**，不需要调用方预处理。
+
+本机构建实测：`Workflow({ name: 'critic-pipeline:*' })` 会报 `Unknown workflow`（name 表只认内置 `deep-research`）；`scriptPath` 通道子代理真会跑（journal.jsonl 有结果）但 `TaskOutput` 报 `No task found`；内联 `script` 通道执行与取回都正常，**优先走它**。
+
+### 代码档参数
+
 主代理（调度员）调 workflow `critic-pipeline:critic-round`：
 
 | 参数 | 必填 | 说明 |
@@ -182,5 +196,6 @@ critic-pipeline/
 
 ## 相关
 
+- 零成本干跑：`node scripts/dryrun-quality-round.cjs <case>`（normal / plagiarism / converged / stalled / noref / nocapture / lensfail），不调真实子代理，只验参数流动与收敛判定。
 - ADR：`D:\app\YuMoBox\docs\adr\0055-critic-pipeline-workflow.md`
 - 团队台本：`D:\app\YuMoBox\.claude\team-kits\standard-kit.json`（干活用团队，挑刺用本插件，两者解耦）

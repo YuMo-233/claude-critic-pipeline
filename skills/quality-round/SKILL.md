@@ -28,7 +28,13 @@ description: 跑一轮画面挑刺。先建立参考作品基准，再执行取�
 
 ## 2. 调用 workflow
 
-调 `quality-round` workflow。一次调用只跑一轮：
+**先试名字，报错就走内联**：
+
+1. 调 `Workflow({ name: 'critic-pipeline:quality-round', args: {...} })`；
+2. 若报 `Unknown workflow`（本机 Haha 构建即如此），用 Glob 找到插件目录下最新的 `workflows/quality-round.js`（形如 `~/.claude/plugins/cache/*/critic-pipeline/*/workflows/quality-round.js`），把文件**全文**作为 `script` 传给 Workflow 工具，`args` 照旧传。
+3. `args` 传对象或 JSON 字符串都行——脚本顶部会归一解析，不用预处理。
+
+一次调用只跑一轮：
 
 - 画面档**不看代码改动**，看的是画面现状 + 基准，所以不传 diff/intent。
 - 性能、卡顿、加载耗时不在本档范畴；要查这些走代码档。

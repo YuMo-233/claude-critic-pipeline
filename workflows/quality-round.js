@@ -34,6 +34,16 @@ export const meta = {
   ],
 }
 
+// 入参归一：本机构建实测，Workflow 工具把 args 以 JSON 字符串传进来（不是对象），
+// 直接 args?.x 永远取不到值。这里统一解析成对象，正文一律用 A。
+const A = (() => {
+  if (args && typeof args === 'object') return args
+  if (typeof args === 'string' && args.trim()) {
+    try { return JSON.parse(args) } catch (e) { return {} }
+  }
+  return {}
+})()
+
 // ─────────────────────────────────────────────────────────────
 // 入参（由调度员传）：
 //   args.benchmarkRefs   数组   —— 参考作品名（一个或多个），必填；插件不写死任何游戏名
@@ -144,23 +154,23 @@ const LENS_GROUPS = [
 ]
 
 // ── 入参归一 ──
-const benchmarkRefs = (Array.isArray(args?.benchmarkRefs) ? args.benchmarkRefs : [])
+const benchmarkRefs = (Array.isArray(A?.benchmarkRefs) ? A.benchmarkRefs : [])
   .map((x) => String(x).trim())
   .filter(Boolean)
-const goal = String(args?.goal ?? '').trim()
-const round = Math.max(1, Number(args?.round) || 1)
-const maxRounds = Math.max(1, Number(args?.maxRounds) || MAX_ROUNDS_DEFAULT)
-const depth = args?.depth === 'full' ? 'full' : 'quick'
-const history = Array.isArray(args?.history) ? args.history : []
-const known = Array.isArray(args?.known) ? args.known : []
-const projectContext = String(args?.projectContext ?? '').trim()
+const goal = String(A?.goal ?? '').trim()
+const round = Math.max(1, Number(A?.round) || 1)
+const maxRounds = Math.max(1, Number(A?.maxRounds) || MAX_ROUNDS_DEFAULT)
+const depth = A?.depth === 'full' ? 'full' : 'quick'
+const history = Array.isArray(A?.history) ? A.history : []
+const known = Array.isArray(A?.known) ? A.known : []
+const projectContext = String(A?.projectContext ?? '').trim()
 const ctxBlock = projectContext
   ? `\n【项目上下文（调用方提供，判断时按此对齐）】\n${projectContext}\n`
   : ''
 const targetScores =
-  args?.targetScores && typeof args.targetScores === 'object' ? args.targetScores : {}
+  A?.targetScores && typeof A.targetScores === 'object' ? A.targetScores : {}
 
-const rawPlan = args?.capturePlan && typeof args.capturePlan === 'object' ? args.capturePlan : {}
+const rawPlan = A?.capturePlan && typeof A.capturePlan === 'object' ? A.capturePlan : {}
 const plan = {
   run: String(rawPlan.run ?? '').trim(),
   workdir: String(rawPlan.workdir ?? '').trim(),
@@ -168,7 +178,7 @@ const plan = {
   scenes: (Array.isArray(rawPlan.scenes) ? rawPlan.scenes : []).map(String).filter(Boolean),
   shots: [
     ...(Array.isArray(rawPlan.shots) ? rawPlan.shots : []),
-    ...(Array.isArray(args?.shots) ? args.shots : []),
+    ...(Array.isArray(A?.shots) ? A.shots : []),
   ]
     .map(String)
     .filter(Boolean),
@@ -207,7 +217,7 @@ const historyBlock = prevRecord
   : ''
 
 let brief =
-  args?.benchmarkBrief && typeof args.benchmarkBrief === 'object' ? args.benchmarkBrief : null
+  A?.benchmarkBrief && typeof A.benchmarkBrief === 'object' ? A.benchmarkBrief : null
 let capture = null
 
 // ── 基准 brief 与目标分 ──
