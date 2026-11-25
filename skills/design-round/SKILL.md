@@ -48,7 +48,7 @@ description: 跑一轮游戏设计挑刺。按数值平衡、经济成长、趣�
 - `converged` / `stopReason` / `stuckDimensions`：收敛状态、停因、卡在哪几维；
 - `progressRecord`：跨轮快照，**存下来传给下一轮**；
 - `benchmarkBrief`：基准口径，**存下来跨轮复用**；
-- `handoff`：按维度分组的施工清单，可直接转给施工队。
+- `handoff`：按维度分组的施工清单，可直接转给施工队；未达标的维会附「参考做法 + 可核验口径 + 出处」（脚本从 brief 拼，无有效基准时明示不附）。
 
 ## 4. 驱动长期迭代
 

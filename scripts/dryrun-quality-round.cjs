@@ -58,7 +58,18 @@ const argsByCase = {
   nocapture: {
     benchmarkRefs: ['MockRefA'],
   },
+  researchfail: {
+    benchmarkRefs: ['MockRefA'],
+    shots: ['mock/shots/home.png'],
+    goal: '基准调研失败的降级验证',
+    round: 1,
+    depth: 'quick',
+  },
   lensfail: {
+    benchmarkRefs: ['MockRefA'],
+    shots: ['mock/shots/home.png'],
+  },
+  researchfail: {
     benchmarkRefs: ['MockRefA'],
     shots: ['mock/shots/home.png'],
   },
@@ -238,7 +249,7 @@ async function agent(prompt, opts = {}) {
   // 先判更具体的前缀：分片判卷的 label 里也带「找茬」，顺序反了会被镜头 mock 抢走
   if (label.startsWith('分片判卷')) return mockShardJudge(prompt, label)
   if (label.startsWith('汇流')) return mockFinalJudge()
-  if (label.includes('调研')) return mockBrief()
+  if (label.includes('调研')) return CASE === 'researchfail' ? null : mockBrief()
   if (label.includes('取证')) return mockCapture()
   if (label.includes('找茬')) return CASE === 'lensfail' ? null : mockLensFindings(label)
   if (label.includes('评审')) return mockDetail()
@@ -272,6 +283,25 @@ __run()
     console.log(JSON.stringify(r, null, 2))
     console.log('=== AGENT CALLS ===')
     console.log(JSON.stringify(agentCalls, null, 2))
+    // ── 断言：参考做法（事实层）──
+    const h = String(r?.handoff ?? '')
+    const asserts = []
+    if (CASE === 'normal') {
+      asserts.push(['handoff 附参考做法', h.includes('参考做法（MockRefA / MockRefB）')])
+      asserts.push(['handoff 附可核验口径', h.includes('可核验口径：')])
+      asserts.push(['handoff 附技法层警示', h.includes('禁止照搬具体构图')])
+      asserts.push(['只对未达标维附参考做法', !/【色彩与构图】[\s\S]*?参考做法/.test(h)])
+    }
+    if (CASE === 'researchfail') {
+      asserts.push(['无有效基准时不出参考做法', !h.includes('参考做法（')])
+      asserts.push(['无有效基准时明示', h.includes('本轮无有效基准 brief')])
+    }
+    let failed = 0
+    for (const [name, ok] of asserts) {
+      console.log('[' + (ok ? 'ok' : 'FAIL') + '] ' + name)
+      if (!ok) failed++
+    }
+    if (failed) process.exit(1)
   })
   .catch((e) => {
     console.error('=== THROWN ===')

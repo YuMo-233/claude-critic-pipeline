@@ -40,6 +40,15 @@ const argsByCase = {
     round: 1,
     depth: 'quick',
   },
+  researchfail: {
+    goal: '基准调研失败的降级验证',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 1,
+    benchmarkRefs: ['MockRefA'],
+    round: 1,
+    depth: 'quick',
+  },
   'solo-nofeedback': {
     goal: '单人模式下数值更平滑',
     projectPath: 'mock/project',
@@ -344,7 +353,7 @@ async function agent(prompt, opts = {}) {
   // 先判更具体的前缀：分片判卷的 label 里也带「找茬」，顺序反了会被镜头 mock 抢走
   if (label.startsWith('分片判卷')) return mockShardJudge(prompt, label)
   if (label.startsWith('汇流')) return mockFinalJudge()
-  if (label.includes('调研')) return mockBrief()
+  if (label.includes('调研')) return CASE === 'researchfail' ? null : mockBrief()
   if (label.includes('取证')) return mockEvidence()
   if (label.includes('反馈心理机制')) return mockPsych()
   if (label.includes('找茬')) return mockLensFindings(label)
@@ -395,6 +404,9 @@ __run()
       assert(r.error === 'missing args.goal', 'expected missing args.goal, got ' + r.error)
     } else if (CASE === 'noevidence') {
       assert(String(r.error || '').startsWith('missing evidence'), 'expected missing evidence, got ' + r.error)
+    } else if (CASE === 'researchfail') {
+      assert(!/参考做法（/.test(r.handoff), 'researchfail: must not paste placeholder as advice')
+      assert(r.handoff.includes('本轮无有效基准 brief'), 'researchfail: should state no valid brief')
     } else {
       assert(!r.error, 'unexpected error: ' + r.error)
       if (CASE === 'normal') {
@@ -420,6 +432,12 @@ __run()
         const fs = r.dimensions.find((d) => d.key === 'fun-structure')
         assert(fs && fs.hollow === true, 'normal: fun-structure should be hollow')
         assert(fs && fs.score <= 3, 'normal: hollow dim should be capped at 3, got ' + (fs && fs.score))
+        const belowCount = r.dimensions.filter(
+          (d) => d.status === 'assessed' && d.score !== null && d.score < d.target
+        ).length
+        const hintCount = (r.handoff.match(/参考做法（MockRefA）/g) || []).length
+        assert(hintCount > 0, 'normal: handoff should carry reference hints')
+        assert(hintCount === belowCount, 'normal: hints should only sit on below-target dims (' + hintCount + ' vs ' + belowCount + ')')
       }
       if (CASE === 'solo-nofeedback') {
         assert(r.activeDimKeys.length === 3, 'solo: 3 dims expected, got ' + r.activeDimKeys.length)

@@ -90,9 +90,11 @@
 | `known` | 否 | 已知未修项 |
 | `projectContext` | 否 | 技术栈 / 资源规范 / 美术红线；不传则项目无关 |
 
-**返回**：`dimensions`（分数/目标/扣分项/优点/是否假达标）、`mustFix`/`shouldFix`/`minor`、`plagiarism`、`coverage`（取证缺口）、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`（存给下一轮）、`benchmarkBrief`（跨轮复用）、`handoff`（按维度分组的施工清单）。
+**返回**：`dimensions`（分数/目标/扣分项/优点/是否假达标）、`mustFix`/`shouldFix`/`minor`、`plagiarism`、`coverage`（取证缺口）、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`（存给下一轮）、`benchmarkBrief`（跨轮复用）、`handoff`（按维度分组的施工清单，未达标维附参考做法与出处）。
 
 **长期迭代**由调度员驱动：拿 `handoff` 去改画面 → 补 `coverage` → 带 `round+1`/`history`/`benchmarkBrief` 再调一轮，直到收敛或触停。
+
+**参考做法（事实层）**：`handoff` 对**未达标**的维附三行——参考作品在该维的做法（裁 160 字）、可核验口径最多 2 条、出处 1 条。全部由脚本从 `benchmarkBrief` 机械拼接，不新增模型输出；调研失败时的占位「基准未覆盖」自动跳过，并在末尾显式写「本轮无有效基准 brief，未附参考做法」。只给事实与出处、不给改造处方——怎么改由施工队决定；画面档另附一行「禁止照搬具体构图、素材、界面布局」。
 
 ## 设计档（design-round）
 
@@ -142,7 +144,7 @@
 
 四类证据（`simPlan.run` / `simPlan.checks` / `simPlan.codePaths` / `feedback` / `benchmarkRefs`）至少给一个，否则直接早退。
 
-**返回**：`dimensions`（分数/目标/扣分项/优点/是否假达标/是否豁免）、`mustFix`/`shouldFix`/`minor`、`evidenceIntegrity`（造假硬阻断）、`unverifiedFeedback`（落不了锚的反馈）、`coverage`、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`、`benchmarkBrief`、`handoff`。
+**返回**：`dimensions`（分数/目标/扣分项/优点/是否假达标/是否豁免）、`mustFix`/`shouldFix`/`minor`、`evidenceIntegrity`（造假硬阻断）、`unverifiedFeedback`（落不了锚的反馈）、`coverage`、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`、`benchmarkBrief`、`handoff`（未达标维附参考做法与出处，规则同画面档）。
 
 ## 安装
 

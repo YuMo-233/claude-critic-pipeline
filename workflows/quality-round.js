@@ -1056,6 +1056,11 @@ const minor = confirmed.filter((f) => f.severity === 'minor')
 const unassessed = dimResults.filter((d) => d.status !== 'assessed')
 const belowTarget = dimResults.filter((d) => d.status === 'assessed' && d.score < d.target)
 
+// brief 是否有真内容（非 fallbackBrief 占位）——决定是否附参考做法
+const hasValidBrief = (brief?.dimensions ?? []).some(
+  (x) => typeof x?.referenceApproach === 'string' && x.referenceApproach.trim() && !x.referenceApproach.includes('基准未覆盖')
+)
+
 const converged =
   mustFix.length === 0 &&
   !plagiarismBlocked &&
@@ -1103,6 +1108,29 @@ const progressRecord = {
 
 const summary = finalJudge?.summary ?? detail.summary ?? ''
 
+// 基准占位符：调研失败/未给参考作品时 fallbackBrief 写的假内容，绝不能当「参考做法」贴出去
+const BRIEF_PLACEHOLDER = '（基准未覆盖，按通用质量线判断）'
+
+// 从基准 brief 机械拼「参考做法 + 可核验口径 + 出处」；零新增模型输出
+function referenceHints(dimKey) {
+  const entry = (brief?.dimensions ?? []).find((x) => x?.key === dimKey)
+  const approach = (entry?.referenceApproach ?? '').trim()
+  if (!approach || approach === BRIEF_PLACEHOLDER || approach.includes('基准未覆盖')) return []
+  const out = []
+  const refNames = (brief?.refs ?? []).filter(Boolean)
+  out.push(`- 参考做法${refNames.length ? `（${refNames.join(' / ')}）` : ''}：${clipText(approach, 160)}`)
+  const criteria = (entry?.verifiableCriteria ?? []).filter((c) => typeof c === 'string' && c.trim()).slice(0, 2)
+  if (criteria.length) {
+    out.push(`- 可核验口径：${criteria.map((c) => clipText(c.trim(), 100)).join('；')}`)
+  }
+  const src = (brief?.sources ?? []).find((s) => s?.title || s?.url)
+  if (src) {
+    const label = [src.title, src.url].filter(Boolean).join(' ')
+    out.push(`- 出处：${clipText(label, 140)}`)
+  }
+  return out
+}
+
 function handoffText() {
   const lines = []
   if (plagiarismBlocked) {
@@ -1128,6 +1156,16 @@ function handoffText() {
     for (const f of related) {
       lines.push(`- [${f.severity}] ${f.location}：${f.problem}（依据：${f.evidence}）`)
     }
+    // 只对未达标的维附参考做法（事实层：人家怎么做的 + 可核验口径 + 出处）
+    if (d.status === 'assessed' && d.score !== null && d.score < d.target) {
+      const hints = referenceHints(d.key)
+      for (const h of hints) lines.push(h)
+      if (hints.length) lines.push('- 注：参考做法仅供技法层借鉴（如多层视差、高对比剪影），禁止照搬具体构图、素材、界面布局')
+    }
+    lines.push('')
+  }
+  if (!hasValidBrief) {
+    lines.push('【本轮无有效基准 brief，未附参考做法】')
     lines.push('')
   }
   if (coverage.length) {
