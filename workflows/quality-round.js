@@ -29,7 +29,7 @@ export const meta = {
     { title: '基准调研', detail: '无基准 brief 时，把调用方点名的参考作品转成八维可核验口径' },
     { title: '取证', detail: '执行调用方给的 capturePlan，收集截图与量化指标' },
     { title: '找茬', detail: '按维度并行找茬并自评扣分；细节评委同批审假达标与抄袭' },
-    { title: '判卷', detail: '主判卷汇总、去重、执行假达标封顶与抄袭硬阻断' },
+    { title: '判卷', detail: '每镜头一个分片判卷（引用式）+ 轻量汇流收口，避免单次输出过大' },
     { title: '收敛', detail: '脚本按双闸门判定收敛 / 停滞 / 硬停' },
   ],
 }
@@ -723,148 +723,258 @@ const blockingPlagiarism = (detail.plagiarismRisks ?? []).filter(
   (r) => (Number(r.confidence) || 0) >= PLAGIARISM_BLOCK_CONFIDENCE
 )
 
-// ── ④ 判卷：汇总 + 去重 + 封顶 + 硬阻断 ──
-const JUDGE_SCHEMA = {
+// ── ④ 判卷：分片判卷（每镜头一片，引用式输出）→ 脚本合并 → 轻量汇流 ──
+// 背景：单个主判卷要一次吃下全部镜头结果、吐出全部终裁，镜头一多就会被上游
+// 单次输出上限截断（实测 8 路时 prompt 十万字符、思考十几万字符，tool call 被截断整轮报废）。
+// 现在每路镜头配一个分片判卷，只回「编号 + 保留/驳回 + 定级 + 维度分」；
+// findings 正文、扣分项一律由脚本从镜头原文回填，输出体积小一个量级。
+// 最后再叫一个轻量汇流判卷，只读各片的小结论，做跨片去重与总结。
+
+function clipText(v, n) {
+  const s = String(v ?? '')
+  return s.length > n ? `${s.slice(0, n)}…(截断 ${s.length - n} 字)` : s
+}
+function clipDeep(v, maxStr = 800, depth = 0) {
+  if (depth > 4) return v
+  if (typeof v === 'string') return clipText(v, maxStr)
+  if (Array.isArray(v)) return v.slice(0, 60).map((x) => clipDeep(x, maxStr, depth + 1))
+  if (v && typeof v === 'object') {
+    const out = {}
+    for (const [k, val] of Object.entries(v)) out[k] = clipDeep(val, maxStr, depth + 1)
+    return out
+  }
+  return v
+}
+
+let findingSeq = 0
+const lensShards = lensResults.map((r) => ({
+  lens: r.lens,
+  result: r,
+  items: (Array.isArray(r.findings) ? r.findings : []).map((f) => ({ id: `F${++findingSeq}`, ...f })),
+}))
+
+const SHARD_JUDGE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['dimensions', 'confirmed', 'rejectedCount', 'plagiarism', 'coverage', 'summary'],
+  required: ['verdicts', 'dimensions', 'summary'],
   properties: {
+    verdicts: {
+      type: 'array',
+      description: '只对本片列出的 finding id 逐条裁决',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'action'],
+        properties: {
+          id: { type: 'string', description: '本片 findings 里的 id，如 F3' },
+          action: { type: 'string', enum: ['keep', 'drop'] },
+          severity: {
+            type: 'string',
+            enum: ['must-fix', 'should-fix', 'minor'],
+            description: 'action=keep 时必填',
+          },
+          reason: { type: 'string', description: '一句话理由，不抄正文' },
+        },
+      },
+    },
     dimensions: {
       type: 'array',
+      description: '只复制本片负责的维度；score 只能等于或低于镜头重算分',
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['key', 'status', 'score', 'deductions'],
+        required: ['key', 'score'],
         properties: {
           key: { type: 'string', enum: DIMENSIONS.map((d) => d.key) },
-          status: { type: 'string', enum: ['assessed', 'no-evidence'] },
-          score: { type: 'number', description: '只能等于或低于镜头重算分，不得凭空上调' },
-          deductions: {
-            type: 'array',
-            items: {
-              type: 'object',
-              additionalProperties: false,
-              required: ['points', 'issue', 'gap', 'evidence'],
-              properties: {
-                points: { type: 'number' },
-                issue: { type: 'string' },
-                gap: { type: 'string' },
-                evidence: { type: 'string' },
-              },
-            },
-          },
-          notes: { type: 'string', description: '合并/下调/封顶的理由' },
+          score: { type: 'number' },
+          notes: { type: 'string', description: '下调或维持的一句理由' },
         },
       },
     },
-    confirmed: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['location', 'problem', 'severity', 'evidence', 'dimension', 'fromLens'],
-        properties: {
-          location: { type: 'string' },
-          problem: { type: 'string' },
-          severity: { type: 'string', enum: ['must-fix', 'should-fix', 'minor'] },
-          evidence: { type: 'string' },
-          dimension: { type: 'string', enum: DIMENSIONS.map((d) => d.key) },
-          fromLens: { type: 'string' },
-        },
-      },
-    },
-    rejectedCount: { type: 'number' },
-    plagiarism: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['blocked', 'risks', 'decision'],
-      properties: {
-        blocked: { type: 'boolean' },
-        risks: {
-          type: 'array',
-          items: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['kind', 'reference', 'ours', 'evidence', 'confidence'],
-            properties: {
-              kind: { type: 'string' },
-              reference: { type: 'string' },
-              ours: { type: 'string' },
-              evidence: { type: 'string' },
-              confidence: { type: 'number' },
-            },
-          },
-        },
-        decision: { type: 'string', description: '为什么阻断/为什么没阻断' },
-      },
-    },
-    coverage: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['scene', 'why', 'neededEvidence', 'fromLens'],
-        properties: {
-          scene: { type: 'string' },
-          why: { type: 'string' },
-          neededEvidence: { type: 'string' },
-          fromLens: { type: 'string' },
-        },
-      },
-    },
-    summary: { type: 'string' },
+    summary: { type: 'string', description: '本片一句话结论' },
   },
 }
 
-function judgePrompt() {
-  return `你是画面档的主判卷。镜头已各自给自己盯的维度打过分、列了扣分项；细节评委已给出假达标与抄袭结论。你的活：
-
-1) 汇总八维：保留镜头分数；你可因证据**下调**，不得凭空上调（上调一律驳回）。合并重复扣分项。
-2) 归置 findings：去重、剔除假阳性与「为挑而挑」、定级（must-fix / should-fix / minor）。
-3) 抄袭守门：细节评委 confidence >= ${PLAGIARISM_BLOCK_CONFIDENCE} 的具体标识命中，必须在 plagiarism.blocked 置 true 并说明；不得洗白。风格与技法不算抄袭。
-4) 汇总 coverage：合并各镜头报的取证缺口。
-5) 一句话总结。
-
-不要自己新增镜头没报过的缺陷；你自己的疑点只能写进 summary 或 plagiarism.decision。
-卷面上的假达标会由脚本强制封顶 3 分并转成必修项，你只需在 notes 里写清是否认同。
-
-【基准 brief】
-${briefRows(DIMENSIONS.map((d) => d.key))}
-
+function shardJudgePrompt(shard) {
+  const dims = (shard.result.dimensions ?? []).map((d) => ({
+    key: d.key,
+    name: DIMENSIONS.find((x) => x.key === d.key)?.name ?? d.key,
+    status: d.status,
+    selfScore: d.status === 'assessed' ? computedScore(d) : null,
+    deductionCount: (d.deductions ?? []).length,
+  }))
+  return `你是画面档的分片判卷，只审【${shard.lens}】这一路镜头自己的产出，不与其他镜头交叉。你只做三件事：
+1) 逐条裁决下面列出的 finding：保留还是驳回；保留项给出定级（must-fix / should-fix / minor）。**用 id 引用，不要抄正文**。
+2) 复核本片负责维度的分数：只能等于或低于该维自评分，不得上调；notes 写一句理由。
+3) 一句话写本片结论。
+规则：不许新增镜头没报过的缺陷；证据站不住、或明显「为挑而挑」才驳回，拿不准就保留。
+${ctxBlock}
 【本轮目标】
 ${goal || '（未指定）'}
-${ctxBlock}
-【取证结果】
-${JSON.stringify(capture, null, 2)}
+
+【本片维度的基准口径】
+${briefRows(dims.map((d) => d.key))}
+
+【本片维度自评】
+${JSON.stringify(dims, null, 2)}
+
+【本片 findings（只裁决这些 id）】
+${JSON.stringify(shard.items, null, 2)}
+
+【取证结果（核对证据用，不要从中另找新缺陷）】
+${JSON.stringify(clipDeep(capture), null, 2)}
 ${historyBlock}${knownBlock}
-【镜头原始结果】
-${JSON.stringify(lensResults, null, 2)}
-
-【细节评委结论】
-${JSON.stringify(detail, null, 2)}
-
 严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
 }
 
 phase('判卷')
-log('主判卷汇总中…')
-const judgeRaw = await agent(judgePrompt(), {
-  label: '判卷:画面终裁',
-  phase: '判卷',
-  agentType: 'critic-pipeline:critic-judge',
-  schema: JUDGE_SCHEMA,
-})
-const judge = judgeRaw ?? null
-if (!judge) log('主判卷未返回结果，退化为镜头自评 + 细节评委结论。')
+log(`分片判卷：${lensShards.length} 片并行（每片只审自己那一路）…`)
+const shardRaw = await parallel(
+  lensShards.map((shard) => () =>
+    agent(shardJudgePrompt(shard), {
+      label: `分片判卷:${shard.lens}`,
+      phase: '判卷',
+      agentType: 'critic-pipeline:critic-judge',
+      schema: SHARD_JUDGE_SCHEMA,
+    })
+  )
+)
 
-const judgeDims = new Map((judge?.dimensions ?? []).map((d) => [d.key, d]))
+const shardDims = new Map()
+let confirmed = []
+let shardDropped = 0
+let shardFailed = 0
+lensShards.forEach((shard, idx) => {
+  const sr = shardRaw?.[idx] ?? null
+  if (!sr) {
+    // 分片判卷失败：本片按镜头原样保留，维度沿用镜头分，不拖垮整轮
+    shardFailed++
+    for (const item of shard.items) confirmed.push({ ...item })
+    return
+  }
+  const verdicts = new Map((sr.verdicts ?? []).map((v) => [String(v.id), v]))
+  for (const item of shard.items) {
+    const v = verdicts.get(item.id)
+    if (v?.action === 'drop') {
+      shardDropped++
+      continue
+    }
+    confirmed.push({ ...item, severity: v?.severity ?? item.severity })
+  }
+  for (const d of sr.dimensions ?? []) {
+    const val = Number(d?.score)
+    if (!DIMENSIONS.some((x) => x.key === d?.key) || !Number.isFinite(val)) continue
+    const prev = shardDims.get(d.key)
+    if (!prev || val < prev.score) shardDims.set(d.key, { score: val, notes: String(d.notes ?? '') })
+  }
+})
+if (shardFailed) log(`有 ${shardFailed} 片分片判卷未返回，该片按镜头原样保留。`)
+
+// ── 轻量汇流判卷：只读各片小结论，做跨片去重与统一口径，不再看原始证据 ──
+const FINAL_JUDGE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['mergeClusters', 'severityOverrides', 'summary'],
+  properties: {
+    mergeClusters: {
+      type: 'array',
+      description: '同一问题被不同镜头分别报出的，按 id 归组；脚本只保留每组第一个',
+      items: { type: 'array', items: { type: 'string' } },
+    },
+    severityOverrides: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'severity'],
+        properties: {
+          id: { type: 'string' },
+          severity: { type: 'string', enum: ['must-fix', 'should-fix', 'minor'] },
+          reason: { type: 'string' },
+        },
+      },
+    },
+    summary: { type: 'string', description: '一句话总结本轮画面状况，点出最该先修的 1~2 项' },
+  },
+}
+
+function finalJudgePrompt() {
+  const dimDigest = DIMENSIONS.map((d) => {
+    const lensDim = lensDimByKey.get(d.key)
+    return {
+      key: d.key,
+      name: d.name,
+      status: lensDim?.status ?? 'no-evidence',
+      lensScore: lensDim?.status === 'assessed' ? computedScore(lensDim) : null,
+      shardScore: shardDims.get(d.key)?.score ?? null,
+    }
+  })
+  const digest = confirmed.map((f) => ({
+    id: f.id,
+    fromLens: f.fromLens,
+    dimension: f.dimension,
+    location: clipText(f.location, 120),
+    problem: clipText(f.problem, 160),
+    severity: f.severity,
+  }))
+  return `你是画面档的汇流判卷。分片判卷已经逐片裁决过，你只做跨片收口，不再看原始证据：
+1) 跨片去重：同一个缺陷被不同镜头分别报出的，按 id 归组（mergeClusters）；脚本只保留每组第一个。不同问题不要硬并。
+2) 统一严重度：跨片口径明显不一致时给 severityOverrides；否则不动。
+3) 一句话总结本轮画面状况（点出最该先修的 1~2 项）。
+不要新增缺陷；不要复述正文；拿不准的分组不要建。
+${ctxBlock}
+【本轮目标】
+${goal || '（未指定）'}
+【维度分数（lensScore 为镜头重算分，shardScore 为分片复核分）】
+${JSON.stringify(dimDigest, null, 2)}
+【分片保留项（引用式）】
+${JSON.stringify(digest, null, 2)}
+【细节评委结论】
+${clipText(detail.summary, 300)}
+${historyBlock}${knownBlock}
+严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
+}
+
+let finalJudge = null
+if (confirmed.length) {
+  phase('汇流')
+  log(`汇流判卷：收口 ${confirmed.length} 条保留项…`)
+  finalJudge =
+    (await agent(finalJudgePrompt(), {
+      label: '汇流:画面终裁',
+      phase: '汇流',
+      agentType: 'critic-pipeline:critic-judge',
+      schema: FINAL_JUDGE_SCHEMA,
+    })) ?? null
+  if (!finalJudge) log('汇流判卷未返回，按分片结果直接合并。')
+} else {
+  log('分片判卷未保留任何缺陷，跳过汇流判卷。')
+}
+
+// 应用汇流裁决：归并簇只留第一个；再套严重度覆盖
+if (finalJudge?.mergeClusters?.length) {
+  const dropIds = new Set()
+  for (const group of finalJudge.mergeClusters) {
+    if (!Array.isArray(group)) continue
+    for (const id of group.slice(1)) if (typeof id === 'string') dropIds.add(id)
+  }
+  if (dropIds.size) confirmed = confirmed.filter((f) => !dropIds.has(f.id))
+}
+const sevOverrides = new Map(
+  (finalJudge?.severityOverrides ?? [])
+    .filter((x) => x && typeof x.id === 'string')
+    .map((x) => [x.id, x.severity])
+)
+if (sevOverrides.size) {
+  confirmed = confirmed.map((f) => (sevOverrides.has(f.id) ? { ...f, severity: sevOverrides.get(f.id) } : f))
+}
 
 // ── ⑤ 收敛：脚本按双闸门判定 ──
 phase('收敛')
 
 const dimResults = DIMENSIONS.map((dim) => {
   const lensDim = lensDimByKey.get(dim.key)
-  const judgeDim = judgeDims.get(dim.key)
+  const judgeDim = shardDims.get(dim.key)
   const assessed = lensDim?.status === 'assessed'
   const lensScore = assessed ? computedScore(lensDim) : null
   const judgeScore = Number.isFinite(Number(judgeDim?.score)) ? Number(judgeDim.score) : null
@@ -872,8 +982,8 @@ const dimResults = DIMENSIONS.map((dim) => {
   const hollow = assessed && hollowDims.has(dim.key)
   if (hollow && score !== null) score = Math.min(score, 3)
   const target = targetFor(dim.key)
-  const deductions =
-    (judgeDim?.deductions?.length ? judgeDim.deductions : lensDim?.deductions) ?? []
+  // 扣分项一律沿用镜头原文（分片判卷只改分数与理由，不重写扣分项）
+  const deductions = lensDim?.deductions ?? []
   return {
     key: dim.key,
     name: dim.name,
@@ -889,14 +999,6 @@ const dimResults = DIMENSIONS.map((dim) => {
     fromLens: lensDim?.fromLens ?? '',
   }
 })
-
-// findings 合并：判卷优先；判卷缺失时退回镜头原始 findings
-let confirmed = Array.isArray(judge?.confirmed) ? judge.confirmed : []
-if (!judge) {
-  confirmed = lensResults.flatMap((r) =>
-    (r.findings ?? []).map((f) => ({ ...f, fromLens: r.lens }))
-  )
-}
 
 // 假达标 → 强制必修项（脚本兜底，不依赖判卷是否记得）
 for (const h of detail.hollowFindings ?? []) {
@@ -925,22 +1027,18 @@ for (const f of confirmed) {
     deduped.push(f)
   }
 }
-confirmed = deduped
+// 内部编号只用于判卷引用，出结果前剥掉
+confirmed = deduped.map(({ id, ...rest }) => rest)
 
-const plagiarismBlocked =
-  judge?.plagiarism?.blocked === true ||
-  blockingPlagiarism.length > 0
-const plagiarismRisks =
-  (judge?.plagiarism?.risks?.length ? judge.plagiarism.risks : detail.plagiarismRisks) ?? []
-const plagiarismDecision =
-  judge?.plagiarism?.decision ??
-  (plagiarismBlocked
-    ? '细节评委给出 confidence >= 0.7 的具体标识命中，硬阻断。'
-    : '未命中具体标识。')
+// 抄袭阻断由细节评委的置信度硬判定，不经判卷洗白
+const plagiarismBlocked = blockingPlagiarism.length > 0
+const plagiarismRisks = detail.plagiarismRisks ?? []
+const plagiarismDecision = plagiarismBlocked
+  ? '细节评委给出 confidence >= 0.7 的具体标识命中，硬阻断。'
+  : '未命中具体标识。'
 
 const coverageMap = new Map()
 const coverageSources = [
-  ...(judge?.coverage ?? []),
   ...lensResults.flatMap((r) =>
     (r.coverageGaps ?? []).map((g) => ({ ...g, fromLens: r.lens }))
   ),
@@ -1000,10 +1098,10 @@ const progressRecord = {
   plagiarismBlocked,
   hollowDimensions: [...hollowDims],
   coverageGapCount: coverage.length,
-  summary: judge?.summary ?? detail.summary ?? '',
+  summary: finalJudge?.summary ?? detail.summary ?? '',
 }
 
-const summary = judge?.summary ?? detail.summary ?? ''
+const summary = finalJudge?.summary ?? detail.summary ?? ''
 
 function handoffText() {
   const lines = []
@@ -1043,7 +1141,7 @@ function handoffText() {
 
 log(
   `收敛判定：${stopReason}；必修 ${mustFix.length} / 建议 ${shouldFix.length} / 可忽略 ${minor.length}` +
-    `；低于目标 ${belowTarget.length} 维；取证缺口 ${coverage.length} 条` +
+    `；驳回 ${shardDropped} 条；低于目标 ${belowTarget.length} 维；取证缺口 ${coverage.length} 条` +
     (plagiarismBlocked ? '；抄袭硬阻断' : '')
 )
 
@@ -1070,7 +1168,7 @@ return {
   },
   // 取证缺口：调度员照着补拍
   coverage,
-  rejectedCount: Number(judge?.rejectedCount) || 0,
+  rejectedCount: shardDropped,
   // 收敛三态
   converged,
   stopReason,

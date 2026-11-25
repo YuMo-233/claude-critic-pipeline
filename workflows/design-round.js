@@ -14,12 +14,14 @@
 //   ② 取证：执行调用方给的 simPlan（跑模拟、读数值表），产出 numericAnchors
 //   ③ 找茬：activeDims 按镜头分组并行逐维找茬并自评扣分；
 //      玩家反馈那一路改用心理机制 schema；细节评委同批并行审假达标与证据造假
-//   ④ 判卷：设计主判卷汇总、去重、执行封顶与证据完整性阻断
+//   ④ 判卷：每镜头一个分片判卷（引用式输出）→ 脚本合并 → 轻量汇流收口
 //   ⑤ 收敛：脚本按双闸门判定收敛 / 停滞 / 硬停
 //
 // 硬约束（写在代码里，不靠自觉）：
 //   - 插件不含任何游戏名、项目路径或模拟脚本；基准与取证全由调用方传
-//   - 分析者 / 细节评委 / 主判卷均无写工具，物理改不了项目文件
+//   - 分析者 / 细节评委 / 判卷均无写工具，物理改不了项目文件
+//   - 判卷必须分片：单次吃下全部镜头结果再吐全部终裁，镜头一多就会被上游
+//     单次输出上限截断（画面档实测 8 路时整轮报废）
 //   - agentType 必须带 `critic-pipeline:` 插件前缀，否则换仓库即报 not found
 //   - 模型写死在 agent 文件 frontmatter（model:），脚本不逐个传 model
 //   - 所有带 schema 的子代理，prompt 末尾写死「必须调用 StructuredOutput」
@@ -29,12 +31,13 @@
 
 export const meta = {
   name: 'design-round',
-  description: '一轮游戏设计挑刺：基准调研 → 取证（数值/模拟） → 逐维找茬（含玩家反馈的心理机制解析）+ 细节评委 → 主判卷 → 扣分表与收敛判定。只挑刺不改设计。',
+  description: '一轮游戏设计挑刺：基准调研 → 取证（数值/模拟） → 逐维找茬（含玩家反馈的心理机制解析）+ 细节评委 → 分片判卷与汇流 → 扣分表与收敛判定。只挑刺不改设计。',
   phases: [
     { title: '基准调研', detail: '无基准 brief 且有参考作品时，把它转成逐维可核验口径' },
     { title: '取证', detail: '执行调用方给的 simPlan，跑模拟、读数值表，产出数值锚点' },
     { title: '找茬', detail: '按维度并行找茬并自评扣分；玩家反馈一路做心理机制解析；细节评委审假达标与证据造假' },
-    { title: '判卷', detail: '设计主判卷汇总、去重、执行假达标封顶与证据完整性阻断' },
+    { title: '判卷', detail: '每镜头一片分片判卷（引用式），脚本按编号回填正文' },
+    { title: '汇流', detail: '轻量判卷跨片去重、统一严重度、写总结；证据造假由脚本硬阻断' },
     { title: '收敛', detail: '脚本按双闸门判定收敛 / 停滞 / 硬停' },
   ],
 }
@@ -885,146 +888,262 @@ const hollowDims = new Set(
   (detail.hollowFindings ?? []).map((f) => String(f.dimension ?? '')).filter(Boolean)
 )
 
-// ── ④ 判卷：汇总 + 去重 + 封顶 + 证据完整性阻断 ──
-const JUDGE_SCHEMA = {
+// ── ④ 判卷：分片判卷（每镜头一片，引用式输出）→ 脚本合并 → 轻量汇流 ──
+// 背景：单个主判卷要一次吃下全部镜头结果、吐出全部终裁，镜头一多就会被上游
+// 单次输出上限截断（画面档实测 8 路时思考十几万字符、tool call 被截断整轮报废）。
+// 这里每路镜头配一个分片判卷，只回「编号 + 保留/驳回 + 定级 + 维度分」，
+// 正文、扣分项、anchorKind 一律由脚本从镜头原文回填。
+
+function clipText(v, n) {
+  const s = String(v ?? '')
+  return s.length > n ? `${s.slice(0, n)}…(截断 ${s.length - n} 字)` : s
+}
+function clipDeep(v, maxStr = 800, depth = 0) {
+  if (depth > 4) return v
+  if (typeof v === 'string') return clipText(v, maxStr)
+  if (Array.isArray(v)) return v.slice(0, 60).map((x) => clipDeep(x, maxStr, depth + 1))
+  if (v && typeof v === 'object') {
+    const out = {}
+    for (const [k, val] of Object.entries(v)) out[k] = clipDeep(val, maxStr, depth + 1)
+    return out
+  }
+  return v
+}
+
+let findingSeq = 0
+const lensShards = lensResults.map((r) => ({
+  lens: r.lens,
+  result: r,
+  items: (Array.isArray(r.findings) ? r.findings : []).map((f) => ({ id: `F${++findingSeq}`, ...f })),
+}))
+
+const SHARD_JUDGE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['dimensions', 'confirmed', 'rejectedCount', 'evidenceIntegrity', 'coverage', 'summary'],
+  required: ['verdicts', 'dimensions', 'summary'],
   properties: {
+    verdicts: {
+      type: 'array',
+      description: '只对本片列出的 finding id 逐条裁决',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'action'],
+        properties: {
+          id: { type: 'string', description: '本片 findings 里的 id，如 F3' },
+          action: { type: 'string', enum: ['keep', 'drop'] },
+          severity: {
+            type: 'string',
+            enum: ['must-fix', 'should-fix', 'minor'],
+            description: 'action=keep 时必填',
+          },
+          anchorKind: { type: 'string', enum: ANCHOR_KINDS, description: '可下调锚点口径；改不了就照抄' },
+          reason: { type: 'string', description: '一句话理由，不抄正文' },
+        },
+      },
+    },
     dimensions: {
       type: 'array',
+      description: '只复制本片负责的维度；score 只能等于或低于镜头重算分',
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['key', 'status', 'score', 'deductions'],
+        required: ['key', 'score'],
         properties: {
           key: { type: 'string', enum: DIMENSIONS.map((d) => d.key) },
-          status: { type: 'string', enum: ['assessed', 'no-evidence'] },
-          score: { type: 'number', description: '只能等于或低于镜头重算分，不得凭空上调' },
-          deductions: {
-            type: 'array',
-            items: {
-              type: 'object',
-              additionalProperties: false,
-              required: ['points', 'issue', 'gap', 'evidence'],
-              properties: {
-                points: { type: 'number' },
-                issue: { type: 'string' },
-                gap: { type: 'string' },
-                evidence: { type: 'string' },
-              },
-            },
-          },
-          notes: { type: 'string', description: '合并/下调/封顶的理由' },
+          score: { type: 'number' },
+          notes: { type: 'string', description: '下调或维持的一句理由' },
         },
       },
     },
-    confirmed: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['location', 'problem', 'severity', 'evidence', 'dimension', 'fromLens', 'anchorKind'],
-        properties: {
-          location: { type: 'string' },
-          problem: { type: 'string' },
-          severity: { type: 'string', enum: ['must-fix', 'should-fix', 'minor'] },
-          evidence: { type: 'string' },
-          dimension: { type: 'string', enum: DIMENSIONS.map((d) => d.key) },
-          fromLens: { type: 'string' },
-          anchorKind: { type: 'string', enum: ANCHOR_KINDS },
-        },
-      },
-    },
-    rejectedCount: { type: 'number' },
-    evidenceIntegrity: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['blocked', 'violations'],
-      properties: {
-        blocked: { type: 'boolean', description: '有证据造假/锚点对不上真实配置时置 true，本轮不算达标' },
-        violations: {
-          type: 'array',
-          items: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['finding', 'why'],
-            properties: {
-              finding: { type: 'string' },
-              why: { type: 'string' },
-            },
-          },
-        },
-      },
-    },
-    coverage: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['item', 'why', 'neededEvidence', 'fromLens'],
-        properties: {
-          item: { type: 'string' },
-          why: { type: 'string' },
-          neededEvidence: { type: 'string' },
-          fromLens: { type: 'string' },
-        },
-      },
-    },
-    summary: { type: 'string' },
+    summary: { type: 'string', description: '本片一句话结论' },
   },
 }
 
-function judgePrompt() {
-  return `你是设计档的主判卷。镜头已各自给自己盯的维度打过分、列了扣分项；细节评委已给出假达标、证据造假与阈值漂移结论。你的活：
-
-1) 汇总各活跃维度：保留镜头分数；你可因证据**下调**，不得凭空上调（上调一律驳回）。合并重复扣分项。
-2) 归置 findings：去重、剔除假阳性与「为挑而挑」、定级（must-fix / should-fix / minor）。
-3) 证据完整性守门：细节评委报的证据造假（用玩家原话冒充结构证据 / 锚点对不上真实配置 / 编造反馈），必须在 evidenceIntegrity.blocked 置 true 并说明，不得洗白。
-4) 汇总 coverage：合并各镜头报的证据缺口。
-5) 一句话总结。
-
-不要自己新增镜头没报过的缺陷；你自己的疑点只能写进 summary 或 evidenceIntegrity.violations。
-卷面上的假达标会由脚本强制封顶 3 分并转成必修项，你只需在 notes 里写清是否认同。
+function shardJudgePrompt(shard) {
+  const dims = (shard.result.dimensions ?? []).map((d) => ({
+    key: d.key,
+    name: DIMENSIONS.find((x) => x.key === d.key)?.name ?? d.key,
+    status: d.status,
+    selfScore: d.status === 'assessed' ? computedScore(d) : null,
+    deductionCount: (d.deductions ?? []).length,
+  }))
+  return `你是设计档的分片判卷，只审【${shard.lens}】这一路镜头自己的产出，不与其他镜头交叉。你只做三件事：
+1) 逐条裁决下面列出的 finding：保留还是驳回；保留项给出定级（must-fix / should-fix / minor）。**用 id 引用，不要抄正文**。
+2) 复核本片负责维度的分数：只能等于或低于该维自评分，不得上调；notes 写一句理由。
+3) 一句话写本片结论。
+规则：不许新增镜头没报过的缺陷；证据站不住、纯情绪当结构证据、或明显「为挑而挑」才驳回，拿不准就保留。
 **玩家原话永远不能当结构证据**：anchorKind 只能是 numeric-config / sim-output / code / benchmark。
-
-【基准 brief】
-${briefRows(activeDims.map((d) => d.key))}
-
+${ctxBlock}
 【本轮目标】
 ${goal}
-${ctxBlock}
-【取证结果】
-${JSON.stringify(evidence, null, 2)}
+
+【本片维度的基准口径】
+${briefRows(dims.map((d) => d.key))}
+
+【本片维度自评】
+${JSON.stringify(dims, null, 2)}
+
+【本片 findings（只裁决这些 id）】
+${JSON.stringify(shard.items, null, 2)}
+
+【取证结果（核对证据用，不要从中另找新缺陷）】
+${JSON.stringify(clipDeep(evidence), null, 2)}
 ${historyBlock}${knownBlock}
-【镜头原始结果】
-${JSON.stringify(lensResults, null, 2)}
-
-【细节评委结论】
-${JSON.stringify(detail, null, 2)}
-
 严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
 }
 
 phase('判卷')
-log('设计主判卷汇总中…')
-const judgeRaw = await agent(judgePrompt(), {
-  label: '判卷:设计终裁',
-  phase: '判卷',
-  agentType: 'critic-pipeline:critic-design-judge',
-  schema: JUDGE_SCHEMA,
-})
-const judge = judgeRaw ?? null
-if (!judge) log('主判卷未返回结果，退化为镜头自评 + 细节评委结论。')
+log(`分片判卷：${lensShards.length} 片并行（每片只审自己那一路）…`)
+const shardRaw = await parallel(
+  lensShards.map((shard) => () =>
+    agent(shardJudgePrompt(shard), {
+      label: `分片判卷:${shard.lens}`,
+      phase: '判卷',
+      agentType: 'critic-pipeline:critic-design-judge',
+      schema: SHARD_JUDGE_SCHEMA,
+    })
+  )
+)
 
-const judgeDims = new Map((judge?.dimensions ?? []).map((d) => [d.key, d]))
+const shardDims = new Map()
+let confirmed = []
+let shardDropped = 0
+let shardFailed = 0
+lensShards.forEach((shard, idx) => {
+  const sr = shardRaw?.[idx] ?? null
+  if (!sr) {
+    shardFailed++
+    for (const item of shard.items) confirmed.push({ ...item })
+    return
+  }
+  const verdicts = new Map((sr.verdicts ?? []).map((v) => [String(v.id), v]))
+  for (const item of shard.items) {
+    const v = verdicts.get(item.id)
+    if (v?.action === 'drop') {
+      shardDropped++
+      continue
+    }
+    confirmed.push({
+      ...item,
+      severity: v?.severity ?? item.severity,
+      anchorKind: ANCHOR_KINDS.includes(v?.anchorKind) ? v.anchorKind : item.anchorKind,
+    })
+  }
+  for (const d of sr.dimensions ?? []) {
+    const val = Number(d?.score)
+    if (!DIMENSIONS.some((x) => x.key === d?.key) || !Number.isFinite(val)) continue
+    const prev = shardDims.get(d.key)
+    if (!prev || val < prev.score) shardDims.set(d.key, { score: val, notes: String(d.notes ?? '') })
+  }
+})
+if (shardFailed) log(`有 ${shardFailed} 片分片判卷未返回，该片按镜头原样保留。`)
+
+// ── 轻量汇流判卷：只读各片小结论 ──
+const FINAL_JUDGE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['mergeClusters', 'severityOverrides', 'summary'],
+  properties: {
+    mergeClusters: {
+      type: 'array',
+      description: '同一问题被不同镜头分别报出的，按 id 归组；脚本只保留每组第一个',
+      items: { type: 'array', items: { type: 'string' } },
+    },
+    severityOverrides: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'severity'],
+        properties: {
+          id: { type: 'string' },
+          severity: { type: 'string', enum: ['must-fix', 'should-fix', 'minor'] },
+          reason: { type: 'string' },
+        },
+      },
+    },
+    summary: { type: 'string', description: '一句话总结本轮设计状况，点出最该先修的 1~2 项' },
+  },
+}
+
+function finalJudgePrompt() {
+  const dimDigest = activeDims.map((d) => {
+    const lensDim = lensDimByKey.get(d.key)
+    return {
+      key: d.key,
+      name: d.name,
+      status: lensDim?.status ?? 'no-evidence',
+      lensScore: lensDim?.status === 'assessed' ? computedScore(lensDim) : null,
+      shardScore: shardDims.get(d.key)?.score ?? null,
+    }
+  })
+  const digest = confirmed.map((f) => ({
+    id: f.id,
+    fromLens: f.fromLens,
+    dimension: f.dimension,
+    location: clipText(f.location, 120),
+    problem: clipText(f.problem, 160),
+    severity: f.severity,
+    anchorKind: f.anchorKind,
+  }))
+  return `你是设计档的汇流判卷。分片判卷已经逐片裁决过，你只做跨片收口，不再看原始证据：
+1) 跨片去重：同一个缺陷被不同镜头分别报出的，按 id 归组（mergeClusters）；脚本只保留每组第一个。不同问题不要硬并。
+2) 统一严重度：跨片口径明显不一致时给 severityOverrides；否则不动。
+3) 一句话总结本轮设计状况（点出最该先修的 1~2 项）。
+不要新增缺陷；不要复述正文；拿不准的分组不要建。
+${ctxBlock}
+【本轮目标】
+${goal}
+【维度分数（lensScore 为镜头重算分，shardScore 为分片复核分）】
+${JSON.stringify(dimDigest, null, 2)}
+【分片保留项（引用式）】
+${JSON.stringify(digest, null, 2)}
+【细节评委结论】
+${clipText(detail.summary, 300)}
+${historyBlock}${knownBlock}
+严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
+}
+
+let finalJudge = null
+if (confirmed.length) {
+  phase('汇流')
+  log(`汇流判卷：收口 ${confirmed.length} 条保留项…`)
+  finalJudge =
+    (await agent(finalJudgePrompt(), {
+      label: '汇流:设计终裁',
+      phase: '汇流',
+      agentType: 'critic-pipeline:critic-design-judge',
+      schema: FINAL_JUDGE_SCHEMA,
+    })) ?? null
+  if (!finalJudge) log('汇流判卷未返回，按分片结果直接合并。')
+} else {
+  log('分片判卷未保留任何缺陷，跳过汇流判卷。')
+}
+
+if (finalJudge?.mergeClusters?.length) {
+  const dropIds = new Set()
+  for (const group of finalJudge.mergeClusters) {
+    if (!Array.isArray(group)) continue
+    for (const id of group.slice(1)) if (typeof id === 'string') dropIds.add(id)
+  }
+  if (dropIds.size) confirmed = confirmed.filter((f) => !dropIds.has(f.id))
+}
+const sevOverrides = new Map(
+  (finalJudge?.severityOverrides ?? [])
+    .filter((x) => x && typeof x.id === 'string')
+    .map((x) => [x.id, x.severity])
+)
+if (sevOverrides.size) {
+  confirmed = confirmed.map((f) => (sevOverrides.has(f.id) ? { ...f, severity: sevOverrides.get(f.id) } : f))
+}
 
 // ── ⑤ 收敛：脚本按双闸门判定 ──
 phase('收敛')
 
 const dimResults = activeDims.map((dim) => {
   const lensDim = lensDimByKey.get(dim.key)
-  const judgeDim = judgeDims.get(dim.key)
+  const judgeDim = shardDims.get(dim.key)
   const assessed = lensDim?.status === 'assessed'
   const lensScore = assessed ? computedScore(lensDim) : null
   const judgeScore = Number.isFinite(Number(judgeDim?.score)) ? Number(judgeDim.score) : null
@@ -1032,8 +1151,8 @@ const dimResults = activeDims.map((dim) => {
   const hollow = assessed && hollowDims.has(dim.key)
   if (hollow && score !== null) score = Math.min(score, 3)
   const target = targetFor(dim.key)
-  const deductions =
-    (judgeDim?.deductions?.length ? judgeDim.deductions : lensDim?.deductions) ?? []
+  // 扣分项一律沿用镜头原文（分片判卷只改分数与理由，不重写扣分项）
+  const deductions = lensDim?.deductions ?? []
   // 玩家反馈维：有反馈但一条都落不了锚 → no-evidence，且不阻塞收敛
   const exempt = dim.key === 'feedback-psych' && !assessed
   return {
@@ -1052,14 +1171,6 @@ const dimResults = activeDims.map((dim) => {
     fromLens: lensDim?.fromLens ?? '',
   }
 })
-
-// findings 合并：判卷优先；判卷缺失时退回镜头原始 findings
-let confirmed = Array.isArray(judge?.confirmed) ? judge.confirmed : []
-if (!judge) {
-  confirmed = lensResults.flatMap((r) =>
-    (r.findings ?? []).map((f) => ({ ...f, fromLens: r.lens }))
-  )
-}
 
 // 假达标 → 强制必修项（脚本兜底，不依赖判卷是否记得）
 for (const h of detail.hollowFindings ?? []) {
@@ -1089,21 +1200,21 @@ for (const f of confirmed) {
     deduped.push(f)
   }
 }
-confirmed = deduped
+// 剥掉分片判卷内部编号，不泄漏到对外返回
+confirmed = deduped.map(({ id, ...rest }) => rest)
 
-const judgeBlocked = judge?.evidenceIntegrity?.blocked === true
+// 证据造假硬阻断：由细节评委独立判定（不再依赖判卷转述，防止洗白）
 const detailViolations = detail.anchorViolations ?? []
-const evidenceBlocked = judgeBlocked || (!judge && detailViolations.length > 0)
-const integrityViolations =
-  (judge?.evidenceIntegrity?.violations?.length
-    ? judge.evidenceIntegrity.violations
-    : detailViolations.map((v) => ({ finding: v.finding, why: `${v.why}（引文：${v.quote}）` }))) ?? []
+const evidenceBlocked = detailViolations.length > 0
+const integrityViolations = detailViolations.map((v) => ({
+  finding: v.finding,
+  why: `${v.why}（引文：${v.quote}）`,
+}))
 
 const coverageMap = new Map()
-const coverageSources = [
-  ...(judge?.coverage ?? []),
-  ...lensResults.flatMap((r) => (r.coverageGaps ?? []).map((g) => ({ ...g, fromLens: r.lens }))),
-]
+const coverageSources = lensResults.flatMap((r) =>
+  (r.coverageGaps ?? []).map((g) => ({ ...g, fromLens: r.lens }))
+)
 for (const g of coverageSources) {
   const k = `${g.item ?? ''}||${g.neededEvidence ?? ''}`
   if (!coverageMap.has(k)) coverageMap.set(k, g)
@@ -1163,10 +1274,10 @@ const progressRecord = {
   hollowDimensions: [...hollowDims],
   coverageGapCount: coverage.length,
   unverifiedFeedbackCount: unverifiedAll.length,
-  summary: judge?.summary ?? detail.summary ?? '',
+  summary: finalJudge?.summary ?? detail.summary ?? '',
 }
 
-const summary = judge?.summary ?? detail.summary ?? ''
+const summary = finalJudge?.summary ?? detail.summary ?? ''
 
 function handoffText() {
   const lines = []
@@ -1244,7 +1355,7 @@ return {
   unverifiedFeedback: unverifiedAll,
   // 证据缺口：调度员照着补数值或补模拟
   coverage,
-  rejectedCount: Number(judge?.rejectedCount) || 0,
+  rejectedCount: shardDropped,
   // 收敛三态
   converged,
   stopReason,

@@ -206,50 +206,42 @@ function mockDetail() {
   }
 }
 
-function mockJudge() {
-  const base = {
-    dimensions: DIM_KEYS.map((k) => ({
-      key: k,
-      status: 'assessed',
-      score: CASE === 'converged' ? 5 : 4,
-      deductions: [],
-      notes: 'mock 判卷',
-    })),
-    rejectedCount: 1,
-    plagiarism: {
-      blocked: CASE === 'plagiarism',
-      risks: CASE === 'plagiarism' ? mockDetail().plagiarismRisks : [],
-      decision: CASE === 'plagiarism' ? '命中具体界面布局' : '未命中具体标识',
-    },
-    coverage: [
-      { scene: 'battle', why: '本轮未拍战斗场景', neededEvidence: '战斗界面截图一张', fromLens: '渲染基础' },
-    ],
-    summary: 'mock 判卷总结',
-  }
-  if (CASE === 'converged') return { ...base, confirmed: [], coverage: [] }
-  return {
-    ...base,
-    confirmed: [
-      {
-        location: 'home.png 左上区域',
-        problem: '光源方向与角色受光不一致',
-        severity: 'must-fix',
-        evidence: '角色高光在右，环境阴影在左',
-        dimension: 'render-pipeline-lighting',
-        fromLens: '渲染基础',
-      },
-    ],
-  }
+function mockShardJudge(prompt, label) {
+  const lens = label.replace('分片判卷:', '')
+  const lf = mockLensFindings(lens)
+  // stalled 用例：让本轮各维分数与上一轮齐平（无改善），才能触发停滞判定
+  const dimensions = lf.dimensions.map((d) => ({
+    key: d.key,
+    score: CASE === 'stalled' ? 4 : 5 - (d.deductions || []).reduce((s, x) => s + x.points, 0),
+    notes: 'mock 分片复核',
+  }))
+  const ids = prompt
+    .split('"id": "')
+    .slice(1)
+    .map((s) => s.slice(0, s.indexOf('"')))
+    .filter((s) => s.startsWith('F'))
+  const keepAll = lens.includes('渲染基础')
+  const verdicts = ids.map((id, i) => {
+    if (keepAll && i === 0) return { id, action: 'keep', severity: 'must-fix', reason: 'mock 证据成立' }
+    return { id, action: 'drop', reason: 'mock 驳回' }
+  })
+  return { verdicts, dimensions, summary: 'mock 分片结论' }
+}
+
+function mockFinalJudge() {
+  return { mergeClusters: [], severityOverrides: [], summary: 'mock 汇流总结' }
 }
 
 async function agent(prompt, opts = {}) {
   const label = String(opts.label || '')
   agentCalls.push({ label, agentType: opts.agentType || '', phase: opts.phase || '', promptLen: prompt.length, schemaRequired: opts.schema?.required || [] })
+  // 先判更具体的前缀：分片判卷的 label 里也带「找茬」，顺序反了会被镜头 mock 抢走
+  if (label.startsWith('分片判卷')) return mockShardJudge(prompt, label)
+  if (label.startsWith('汇流')) return mockFinalJudge()
   if (label.includes('调研')) return mockBrief()
   if (label.includes('取证')) return mockCapture()
   if (label.includes('找茬')) return CASE === 'lensfail' ? null : mockLensFindings(label)
   if (label.includes('评审')) return mockDetail()
-  if (label.includes('判卷')) return mockJudge()
   return null
 }
 

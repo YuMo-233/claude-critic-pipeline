@@ -16,7 +16,7 @@
 - 自己改完，自己复审，看不出问题；
 - 兼容性、性能、用户体验这些维度，改代码时往往没顾上。
 
-这个流水线用**每轮全新的一次性只读子代理**，从四个独立视角（外加一个可选的发散者）找问题，再由一个**判卷的**去伪存真、定级。找茬的和判卷的都**没有写工具**（用 `disallowedTools` 隔离，物理上改不了代码），不靠自觉。
+这个流水线用**每轮全新的一次性只读子代理**，从四个独立视角（外加一个可选的发散者）找问题，再由**分片判卷**逐路去伪、再由**汇流判卷**统一口径定级。找茬的和判卷的都**没有写工具**（用 `disallowedTools` 隔离，物理上改不了代码），不靠自觉。
 
 ## 内部结构
 
@@ -24,9 +24,12 @@
 
 ```
 ① 找茬   N 路只读 critic 并行
-② 判卷   一位 judge 去伪 + 定级 + 判断是否需升级
-③ 升级   （可选）judge 判定高风险时，补派 1~2 路新视角 → 二次汇总
+② 分片判卷  每一路找茬配一个分片判卷，只审该路自己报的 findings（引用式：只回编号+keep/drop+定级）
+③ 汇流   轻量判卷只读各片小结论，做跨片去重、统一严重度、判断是否需升级
+④ 升级   （可选）汇流判高风险时补派 1~2 路新视角 → 同样分片判卷并入
 ```
+
+**为什么分片**：判卷一次吃下全部镜头结果、一次吐出全部终裁，缺陷条数一多就会撞上游单次输出上限，整轮报废。分片后每片只处理一路，输出体量恒定；正文/位置/证据由脚本从原始 findings 回填，判卷只回编号与结论。跨片重复由汇流判卷给合并组，脚本只保留每组第一条——汇流仍可能漏合并，但不会再因体量炸掉。
 
 **四路常规视角**：
 
@@ -37,7 +40,7 @@
 | 性能 | 关键路径上卡顿的写法：O(n²)、无谓重算、同步 IO、无界缓存/泄漏/无界并发 |
 | 用户体验 | 先枚举**用户可达路径矩阵**（每条标 covered/uncovered/n-a），只对 uncovered 报可证据化的体验缺陷（无反馈、缺加载/空/错误态、该禁未禁、裸抛栈、死胡同等）；纯品味（配色/间距/圆角）一律不报 |
 
-**发散者**（第五路，默认开，`diverge:false` 关）：**唯一允许看超 diff 范围**的挑刺者。它从 diff 推断本次触碰的功能/交互族，枚举该族所有入口路径，专抓"改了这条路径、漏了同族其它路径"这类缺陷。它的发现分三类桶，由判卷归置：
+**发散者**（第五路，默认开，`diverge:false` 关）：**唯一允许看超 diff 范围**的挑刺者。它从 diff 推断本次触碰的功能/交互族，枚举该族所有入口路径，专抓"改了这条路径、漏了同族其它路径"这类缺陷。它的发现分三类桶，由分片判卷归置、汇流校对：
 
 - `repairIncomplete`（本次没修完）→ 进主清单；
 - `preExisting`（既有老毛病，与本次改动无关）→ 单列返回，**交用户拍板，绝不混入本次必修**；
@@ -58,11 +61,11 @@
 ② 取证             执行调用方给的 capturePlan，收集截图与量化指标
 ③ 找茬             4 路合并镜头（depth=full 拆 8 路）逐维找茬并自评扣分
                     细节评委同批并行：审假达标 + 抄袭风险
-④ 判卷             主判卷汇总、去重、执行封顶与硬阻断
+④ 分片+汇流        每镜头一个分片判卷（引用式），再轻量汇流跨片去重；封顶与硬阻断由脚本执行
 ⑤ 收敛             脚本按双闸门判定收敛 / 停滞 / 硬停
 ```
 
-**评分是扣分表**：每维满分 5，从 5 往下扣；每笔扣分必须写清「差什么 / 差距多大 / 证据在哪」，无据不扣分。脚本按扣分项重算，不信手填总分；判卷只能下调，不能凭空上调。
+**评分是扣分表**：每维满分 5，从 5 往下扣；每笔扣分必须写清「差什么 / 差距多大 / 证据在哪」，无据不扣分。脚本按扣分项重算，不信手填总分；分片判卷只能给分数与理由，扣分项一律沿用镜头原文（保证「5 - 扣分合计」可核验），汇流不再改扣分项。
 
 **两条红线**：
 
@@ -116,7 +119,7 @@
 ② 取证             执行 simPlan（模拟命令 / 校验命令）
 ③ 找茬             按组并行镜头（depth=full 拆逐维）挑刺并自评扣分
                     玩家反馈维单独走心理机制解析；细节评委同批并行：审假达标 + 证据造假 + 阈值漂移
-④ 判卷             主判卷汇总、去重、下调分数、证据完整性守门
+④ 分片+汇流        每镜头一个分片判卷（引用式，可改判 anchorKind），再轻量汇流跨片去重；证据造假阻断由脚本按细节评委违规执行
 ⑤ 收敛             脚本按双闸门判定收敛 / 停滞 / 硬停
 ```
 
@@ -200,7 +203,7 @@ claude plugin install critic-pipeline@haha-connectors
 | `lenses` | 否 | 只开某几路：`correctness-regression` / `compat` / `perf` / `ux`，不传=四路全开 |
 | `projectContext` | 否 | 项目上下文：技术栈 / 版本矩阵 / 项目红线 / 领域术语，自动拼进找茬/发散者/判卷三处 prompt。**不传则技术栈无关，任何仓库都能跑** |
 | `diverge` | 否 | 是否启用发散者，默认 `true`；`false` 关闭 |
-| `escalate` | 否 | 是否允许判卷触发升级门，默认允许 |
+| `escalate` | 否 | 是否允许汇流判卷触发升级门，默认允许 |
 | `maxEscalate` | 否 | 升级最多补几路，默认 2 |
 
 **返回**（结构化）：
@@ -211,8 +214,8 @@ claude plugin install critic-pipeline@haha-connectors
 | `mustFix` / `shouldFix` / `minor` | 按严重度分档 |
 | `preExisting` | 发散者报的既有老毛病，单列，交用户拍板 |
 | `pathMatrix` | 发散者枚举的同族入口路径矩阵 |
-| `userPathMatrix` | UX 路枚举的用户可达路径矩阵（判卷校对后） |
-| `rejectedCount` | 被判卷驳回的条数 |
+| `userPathMatrix` | UX 路枚举的用户可达路径矩阵（汇流判卷校对后） |
+| `rejectedCount` | 被分片判卷驳回的条数合计 |
 | `escalate` | 升级门信息（是否触发、补派了几路） |
 | `handoff` | 可直接贴给施工队的文字清单 |
 
@@ -221,7 +224,7 @@ claude plugin install critic-pipeline@haha-connectors
 - **只挑刺，不修代码**。所有角色都不用 `tools` 白名单，而是用 `disallowedTools` 禁掉全部写工具与子代理派发工具，物理上改不了代码；视觉挑刺者额外保留读图与执行取证命令的能力，设计档分析师额外保留执行模拟命令的能力。
 - **不许用 `tools` 白名单**。本机构建下，agent 一旦声明 `tools`，引擎注入的 `StructuredOutput` 会被过滤掉，带 schema 的子代理必然交不出结果。
 - **每轮全新视角**。每轮都是一次性子代理，无记忆，天然"换人挑刺"。
-- **判卷不自审**。判卷的不新增 findings，它自己发现的疑点只走升级门，交给下一轮独立找茬核实。
+- **判卷不自审**。分片判卷与汇流都不新增 findings（分片 schema 物理上没有新增字段），汇流发现的疑点只走升级门，交给下一轮独立找茬核实。
 - **模型分档只改 `.md`**。脚本不写 model，模型与工具写在 agent 文件 frontmatter，换档只改文件不动脚本。
 
 ## 文件结构
@@ -233,19 +236,20 @@ critic-pipeline/
 │   └── plugin.json          # 插件 manifest（打包版）
 ├── agents/
 │   ├── critic-reader.md               # 代码档找茬角色（只读 + 快档）
-│   ├── critic-judge.md                # 代码档判卷角色（只读 + 强档）
+│   ├── critic-judge.md                # 代码/画面档分片判卷与汇流判卷共用角色（只读 + 强档）
 │   ├── critic-vision-reader.md        # 画面档：基准调研 / 取证 / 逐维找茬
 │   ├── critic-detail-judge.md         # 画面档：细节评委（假达标 + 抄袭）
 │   ├── critic-design-analyst.md       # 设计档：基准调研 / 取证 / 逐维找茬 / 反馈心理机制解析
 │   ├── critic-design-detail-judge.md  # 设计档：细节评委（假达标 + 证据造假 + 阈值漂移）
-│   └── critic-design-judge.md         # 设计档：主判卷
+│   └── critic-design-judge.md         # 设计档：分片判卷 / 汇流判卷
 ├── skills/
 │   ├── critic-round/SKILL.md     # /critic-pipeline:critic-round
 │   ├── quality-round/SKILL.md    # /critic-pipeline:quality-round
 │   └── design-round/SKILL.md     # /critic-pipeline:design-round
 ├── scripts/
 │   ├── dryrun-quality-round.cjs  # 画面档零成本干跑
-│   └── dryrun-design-round.cjs   # 设计档零成本干跑
+│   ├── dryrun-design-round.cjs   # 设计档零成本干跑
+│   └── dryrun-critic-round.cjs   # 代码档零成本干跑
 └── workflows/
     ├── critic-round.js           # 代码档流水线
     ├── quality-round.js          # 画面档流水线
@@ -256,6 +260,9 @@ critic-pipeline/
 
 ## 相关
 
-- 零成本干跑：`node scripts/dryrun-quality-round.cjs <case>`（normal / plagiarism / converged / stalled / noref / nocapture / lensfail）与 `node scripts/dryrun-design-round.cjs <case>`（normal / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified），不调真实子代理，只验参数流动与收敛判定。
+- 零成本干跑（不调真实子代理，只验参数流动、分片判卷合并与收敛判定）：
+  - `node scripts/dryrun-critic-round.cjs <case>`：normal / cleanup / explicit-lenses / nodiff / escalate / dropall
+  - `node scripts/dryrun-quality-round.cjs <case>`：normal / plagiarism / converged / stalled / noref / nocapture / lensfail
+  - `node scripts/dryrun-design-round.cjs <case>`：normal / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified
 - ADR：`D:\app\YuMoBox\docs\adr\0055-critic-pipeline-workflow.md`
 - 团队台本：`D:\app\YuMoBox\.claude\team-kits\standard-kit.json`（干活用团队，挑刺用本插件，两者解耦）

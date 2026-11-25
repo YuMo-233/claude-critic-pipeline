@@ -302,77 +302,34 @@ function mockDetail() {
   }
 }
 
-function baseJudgeDims(score) {
-  return DIM_KEYS.map((k) => ({
-    key: k,
-    status:
-      CASE === 'simfail' && (k === 'combat-balance' || k === 'economy-growth')
-        ? 'no-evidence'
-        : 'assessed',
-    score,
-    deductions: [],
-    notes: 'mock 判卷',
-  }))
+function idsOf(prompt) {
+  return prompt
+    .split('"id": "')
+    .slice(1)
+    .map((s) => s.slice(0, s.indexOf('"')))
+    .filter((s) => s.startsWith('F'))
 }
 
-function mockJudge() {
-  let confirmed = []
-  if (CASE === 'simfail' || CASE === 'converged' || CASE === 'psych-unverified') {
-    confirmed = []
-  } else if (CASE === 'stalled') {
-    confirmed = [
-      {
-        location: 'data/boss.csv:3',
-        problem: '第3章敌人HP涨幅超玩家DPS涨幅',
-        severity: 'must-fix',
-        evidence: '敌人 2400 / 玩家涨幅对应 1600',
-        dimension: 'combat-balance',
-        fromLens: '数值与经济',
-        anchorKind: 'numeric-config',
-      },
-      {
-        location: 'data/boss.csv:4',
-        problem: '第4章掉落率与显示不一致',
-        severity: 'must-fix',
-        evidence: '显示 10% 实际 5%',
-        dimension: 'economy-growth',
-        fromLens: '数值与经济',
-        anchorKind: 'numeric-config',
-      },
-    ]
-  } else if (CASE === 'evidenceblocked') {
-    confirmed = []
-  } else if (CASE === 'thresholddrift') {
-    confirmed = []
-  } else {
-    confirmed = [
-      {
-        location: 'data/boss.csv:3',
-        problem: '第3章敌人HP涨幅超玩家DPS涨幅',
-        severity: 'must-fix',
-        evidence: '敌人 2400 / 玩家涨幅对应 1600',
-        dimension: 'combat-balance',
-        fromLens: '数值与经济',
-        anchorKind: 'numeric-config',
-      },
-    ]
-  }
-  return {
-    dimensions: baseJudgeDims(CASE === 'stalled' ? 4 : 5),
-    confirmed,
-    rejectedCount: 1,
-    evidenceIntegrity: {
-      blocked: CASE === 'evidenceblocked',
-      violations:
-        CASE === 'evidenceblocked'
-          ? [{ finding: '胜任感受挫', why: '锚点 data/boss.csv:9 不存在' }]
-          : [],
-    },
-    coverage: [
-      { item: '合作收益实测', why: '本轮没跑多人模拟', neededEvidence: '多人协同收益模拟输出', fromLens: '多人协作' },
-    ],
-    summary: 'mock 判卷总结',
-  }
+function mockShardJudge(prompt, label) {
+  const lens = label.replace('分片判卷:', '')
+  const own = Object.entries(LENS_DIMS).find(([n]) => lens.includes(n))?.[1] || DIM_KEYS
+  const dimensions = own.map((k) => ({
+    key: k,
+    score: CASE === 'stalled' ? 4 : 5,
+    notes: 'mock 分片复核',
+  }))
+  const keep = CASE === 'normal' || CASE === 'stalled'
+  const isNumbers = lens.includes('数值与经济')
+  const verdicts = idsOf(prompt).map((id) =>
+    keep && isNumbers
+      ? { id, action: 'keep', severity: 'must-fix', reason: 'mock 证据成立' }
+      : { id, action: 'drop', reason: 'mock 驳回' }
+  )
+  return { verdicts, dimensions, summary: 'mock 分片结论' }
+}
+
+function mockFinalJudge() {
+  return { mergeClusters: [], severityOverrides: [], summary: 'mock 汇流总结' }
 }
 
 async function agent(prompt, opts = {}) {
@@ -384,12 +341,14 @@ async function agent(prompt, opts = {}) {
     promptLen: prompt.length,
     schemaRequired: opts.schema?.required || [],
   })
+  // 先判更具体的前缀：分片判卷的 label 里也带「找茬」，顺序反了会被镜头 mock 抢走
+  if (label.startsWith('分片判卷')) return mockShardJudge(prompt, label)
+  if (label.startsWith('汇流')) return mockFinalJudge()
   if (label.includes('调研')) return mockBrief()
   if (label.includes('取证')) return mockEvidence()
   if (label.includes('反馈心理机制')) return mockPsych()
   if (label.includes('找茬')) return mockLensFindings(label)
   if (label.includes('评审')) return mockDetail()
-  if (label.includes('判卷')) return mockJudge()
   return null
 }
 

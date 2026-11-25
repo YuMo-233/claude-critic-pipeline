@@ -45,7 +45,7 @@ description: 跑一轮通用挑刺。代码改动完成后，分诊员先按任�
 
 返回是结构化清单，直接用：
 
-- `mustFix` / `shouldFix` / `minor`：判卷定级后的确认项；
+- `mustFix` / `shouldFix` / `minor`：分片判卷+汇流定级后的确认项；
 - `preExisting`：发散者发现的同场景老毛病，**单列给用户拍板，绝不混进本次必修**；
 - `pathMatrix` / `userPathMatrix`：发散者与 UX 路枚举的入口/用户可达路径矩阵；
 - `rejectedCount`：被驳掉的假阳性条数，用来核对有没有漏；

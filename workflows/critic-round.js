@@ -8,8 +8,11 @@
 //   ② 并行扇出：N 路「找茬的」同时开跑
 //      常规四路：正确性与回归 / 兼容 / 性能 / 用户体验（UX 路先枚举用户可达路径矩阵再找缺陷）
 //      外加可选的第五路「发散者」
-//   ③ 汇总：一位「判卷的」去伪 + 定级 + 自主判断要不要加派
-//   ④ 可选：判卷的判定高风险 → 再派 1~2 路补充「找茬的」→ 判卷的二次汇总
+//   ③ 判卷：每路镜头配一个分片判卷（只回编号+保留/驳回+定级）→ 脚本合并 → 轻量汇流判卷
+//   ④ 可选：汇流判卷判定高风险 → 再派 1~2 路补充「找茬的」→ 分片判卷后并入
+//
+// 判卷必须分片：单次吃下全部镜头结果再吐全部终裁，镜头一多就会被上游
+// 单次输出上限截断（画面档实测 8 路时思考十几万字符、tool call 被截断整轮报废）。
 //
 // 「发散者」是唯一被允许看超本 diff 范围的找茬者：它枚举同功能/同交互族的
 // 所有入口路径（拖拽→扫拖拽的全部入口，而非只盯 diff 那几行），专抓"改了这
@@ -29,13 +32,14 @@
 
 export const meta = {
   name: 'critic-round',
-  description: '一轮多视角挑刺：分诊判任务类型 → 并行 N 路只读找茬（含发散者）→ 判卷去伪定级 →（可选）升级补充 → 返回结构化 findings',
+  description: '一轮多视角挑刺：分诊判任务类型 → 并行 N 路只读找茬（含发散者）→ 分片判卷与汇流去伪定级 →（可选）升级补充 → 返回结构化 findings',
   phases: [
     { title: '分诊', detail: '分诊员按任务性质判类型（整理文件/新功能/修bug/重构），决定跑哪些视角' },
     { title: '找茬', detail: 'N 路只读 critic 并行，各看一个视角（发散者枚举同族入口路径）' },
-    { title: '判卷', detail: '去伪存真 + 定级 + 判断是否需升级；发散发现归三类桶' },
-    { title: '升级', detail: '仅在判卷判定高风险时，补派 1~2 路新视角' },
-    { title: '终裁', detail: '汇总最终清单' },
+    { title: '判卷', detail: '每路镜头一片分片判卷（引用式），脚本按编号回填正文' },
+    { title: '汇流', detail: '轻量判卷跨片去重、统一严重度、校对路径矩阵、判断是否升级' },
+    { title: '升级', detail: '仅在汇流判卷判定高风险时，补派 1~2 路新视角' },
+    { title: '终裁', detail: '升级补派的 findings 分片判卷后并入最终清单' },
   ],
 }
 
@@ -409,88 +413,6 @@ const FINDINGS_SCHEMA = {
   },
 }
 
-const JUDGE_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: [
-    'confirmed',
-    'userPathMatrix',
-    'rejectedCount',
-    'needEscalate',
-    'escalateLenses',
-    'summary',
-  ],
-  properties: {
-    confirmed: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['location', 'problem', 'severity', 'evidence', 'fromLens'],
-        properties: {
-          location: { type: 'string' },
-          problem: { type: 'string' },
-          severity: { type: 'string', enum: ['must-fix', 'should-fix', 'minor'] },
-          evidence: { type: 'string' },
-          fromLens: { type: 'string' },
-        },
-      },
-    },
-    // 发散者发现在判卷后的归置结果（无发散者时为空数组）
-    pathMatrix: {
-      type: 'array',
-      description: '发散者的入口路径矩阵原样透传（判卷可修正 status/note），无发散者时空数组',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['path', 'status', 'note'],
-        properties: {
-          path: { type: 'string' },
-          status: { type: 'string', enum: ['covered', 'uncovered', 'n-a'] },
-          note: { type: 'string' },
-        },
-      },
-    },
-    userPathMatrix: {
-      type: 'array',
-      description: '用户体验路的用户可达路径矩阵（校对后透传），无 UX 路时为空数组',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['path', 'status', 'note'],
-        properties: {
-          path: { type: 'string' },
-          status: { type: 'string', enum: ['covered', 'uncovered', 'n-a'] },
-          note: { type: 'string' },
-        },
-      },
-    },
-    preExisting: {
-      type: 'array',
-      description: '发散者确认的老毛病（bucket=preExisting），单列给用户拍板，绝不混入 confirmed',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['location', 'problem', 'severity', 'evidence'],
-        properties: {
-          location: { type: 'string' },
-          problem: { type: 'string' },
-          severity: { type: 'string', enum: ['must-fix', 'should-fix', 'minor'] },
-          evidence: { type: 'string' },
-        },
-      },
-    },
-    rejectedCount: { type: 'number', description: '被驳掉的假阳性条数' },
-    needEscalate: { type: 'boolean', description: '是否需要补派新视角再挑一轮' },
-    escalateLenses: {
-      type: 'array',
-      description: 'needEscalate 为 true 时要补的具体视角描述',
-      items: { type: 'string' },
-    },
-    summary: { type: 'string', description: '一句话总结本轮整体结论' },
-  },
-}
-
 // ── ① 并行扇出：N 路找茬同时开跑（发散者算一路，但用独立 schema） ──
 phase('找茬')
 log(
@@ -541,59 +463,253 @@ log(
     (diverge ? ` + 发散者 ${divergentFindings.length} 条 / 路径矩阵 ${divergerMatrix.length} 条` : '')
 )
 
-// ── ② 判卷：去伪 + 定级 + 判断是否升级（发散发现归三桶） ──
+// ── ② 判卷：分片判卷（每路镜头一片，引用式输出）→ 脚本合并 → 轻量汇流 ──
+// 背景：单个判卷要一次吃下全部镜头结果、吐出全部终裁，镜头一多就会被上游
+// 单次输出上限截断（画面档实测 8 路时思考十几万字符、tool call 被截断整轮报废）。
+// 这里每路镜头配一个分片判卷，只回「编号 + 保留/驳回 + 定级」，
+// 正文与证据由脚本从原始 findings 回填；路径矩阵直接交汇流判卷校对。
 phase('判卷')
 
-function judgePrompt(findings, round, divergent) {
-  const divergeBlock =
-    diverge && divergent.length
-      ? `\n【发散者发现（带 bucket 标记，必须按下述规则归置）】\n${JSON.stringify(divergent, null, 2)}\n
-发散者发现归置规则：
-- bucket=repairIncomplete：属本次改动没修完，归入 confirmed（照常定级）。
-- bucket=preExisting：同场景老毛病，与本次改动无关——归入 preExisting，绝不混入 confirmed。
-- bucket=adjacentRisk：相邻风险。置信够就归 confirmed 定 minor；把握不足则体现在 needEscalate/escalateLenses 里。
-- 发散者的 location/problem 一样要过证据关：证据站不住的直接驳掉（计进 rejectedCount）。`
-      : ''
+function clipText(v, n) {
+  const s = String(v ?? '')
+  return s.length > n ? `${s.slice(0, n)}…(截断 ${s.length - n} 字)` : s
+}
 
-  return `你是判卷的（主任医师），不是挑刺的人。你的活只有三件：
-1) 把下面 ${findings.length} 条原始 findings 去重、剔除假阳性与"为挑而挑"、给每条定级（must-fix / should-fix / minor）；
-2) 判断是否需要补派新视角再挑一轮（needEscalate）——只有当改动碰了高风险面（权限/并发/安全/认证/数据迁移/不可逆操作）或你对现有结论明显没把握时才置 true；
-3) 一句话总结。
+let findingSeq = 0
+const findingShards = perLens.map((r) => ({
+  lens: r.lens,
+  items: (r.findings || []).map((f) => ({ id: `F${++findingSeq}`, ...f, fromLens: r.lens })),
+}))
+if (divergentFindings.length) {
+  findingShards.push({
+    lens: '发散者',
+    items: divergentFindings.map((f) => ({ id: `F${++findingSeq}`, ...f })),
+  })
+}
 
-findings 只报这次改动引起的问题；发散者（fromLens=发散者）的发现是唯一例外，按 bucket 规则归置。
-不要自己新增 findings；你发现的疑点只能体现在 needEscalate/escalateLenses 里，交给下一轮独立 critic 核实。
-${divergeBlock}
-${diverge ? `\n【入口路径矩阵（校对后原样透传，可修正 status/note）】\n${JSON.stringify(divergerMatrix, null, 2)}\n` : ''}
-${uxMatrix.length ? `\n【用户体验路的用户可达路径矩阵（核对 status 是否站得住，可修正；这份放 userPathMatrix，不要和上面的入口路径矩阵混）】\n${JSON.stringify(uxMatrix, null, 2)}\n` : ''}
+const SHARD_JUDGE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['verdicts', 'summary'],
+  properties: {
+    verdicts: {
+      type: 'array',
+      description: '只对本片列出的 finding id 逐条裁决',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'action'],
+        properties: {
+          id: { type: 'string', description: '本片 findings 里的 id，如 F3' },
+          action: { type: 'string', enum: ['keep', 'drop'] },
+          severity: {
+            type: 'string',
+            enum: ['must-fix', 'should-fix', 'minor'],
+            description: 'action=keep 时必填',
+          },
+          bucket: {
+            type: 'string',
+            enum: ['repairIncomplete', 'preExisting', 'adjacentRisk'],
+            description: '仅发散者那路需要：可改判 bucket，改不了就照抄',
+          },
+          reason: { type: 'string', description: '一句话理由，不抄正文' },
+        },
+      },
+    },
+    summary: { type: 'string', description: '本片一句话结论' },
+  },
+}
+
+function shardJudgePrompt(shard) {
+  const isDivergeShard = shard.lens === '发散者'
+  const bucketBlock = isDivergeShard
+    ? `\n发散者发现归置规则：
+- bucket=repairIncomplete：属本次改动没修完，照常定级。
+- bucket=preExisting：同场景老毛病，与本次改动无关，照抄即可，脚本会单列给用户拍板。
+- bucket=adjacentRisk：相邻风险。置信够就定 minor，把握不足就驳回。
+- 发散者的 location/problem 一样要过证据关：证据站不住的直接驳回。\n`
+    : ''
+  return `你是代码档的分片判卷，只审【${shard.lens}】这一路镜头自己的产出，不与其他镜头交叉。你只做两件事：
+1) 逐条裁决下面列出的 finding：保留还是驳回；保留项给出定级（must-fix / should-fix / minor）。**用 id 引用，不要抄正文**。
+2) 一句话写本片结论。
+规则：不许新增镜头没报过的缺陷；证据站不住或明显「为挑而挑」才驳回，拿不准就保留。
+${bucketBlock}
 【本轮修改意图】
 ${intent}
 ${ctxBlock}
 
-【原始 findings（第 ${round} 轮）】
-${JSON.stringify(findings, null, 2)}
+【本片 findings（只裁决这些 id）】
+${JSON.stringify(shard.items, null, 2)}
 
 严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
 }
 
-const round1 = await agent(judgePrompt(allFindings, 1, divergentFindings), {
-  label: '判卷:R1',
-  phase: '判卷',
-  agentType: 'critic-pipeline:critic-judge',
-  schema: JUDGE_SCHEMA,
+const shardRaw = await parallel(
+  findingShards.map((shard) => () =>
+    agent(shardJudgePrompt(shard), {
+      label: `分片判卷:${shard.lens}`,
+      phase: '判卷',
+      agentType: 'critic-pipeline:critic-judge',
+      schema: SHARD_JUDGE_SCHEMA,
+    })
+  )
+)
+
+let confirmed = []
+let preExisting = []
+let rejected = 0
+let shardFailed = 0
+findingShards.forEach((shard, idx) => {
+  const sr = shardRaw?.[idx] ?? null
+  if (!sr) {
+    shardFailed++
+    for (const item of shard.items) {
+      if (item.bucket === 'preExisting') preExisting.push(item)
+      else confirmed.push({ ...item })
+    }
+    return
+  }
+  const verdicts = new Map((sr.verdicts ?? []).map((v) => [String(v.id), v]))
+  for (const item of shard.items) {
+    const v = verdicts.get(item.id)
+    if (v?.action === 'drop') {
+      rejected++
+      continue
+    }
+    const merged = { ...item, severity: v?.severity ?? item.severity }
+    const bucket = v?.bucket ?? item.bucket
+    if (bucket === 'preExisting') preExisting.push(merged)
+    else confirmed.push({ ...merged, bucket })
+  }
 })
+if (shardFailed) log(`有 ${shardFailed} 片分片判卷未返回，该片按原始 findings 全量保留。`)
 
-let finalConfirmed = round1?.confirmed ?? []
-let finalPreExisting = round1?.preExisting ?? []
-let finalPathMatrix = round1?.pathMatrix ?? []
-let finalUserPathMatrix = round1?.userPathMatrix?.length ? round1.userPathMatrix : uxMatrix
-let rejected = round1?.rejectedCount ?? 0
+// ── 轻量汇流判卷：只读各片保留项的紧凑清单 ──
+const FINAL_JUDGE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['mergeClusters', 'severityOverrides', 'summary'],
+  properties: {
+    mergeClusters: {
+      type: 'array',
+      description: '同一问题被多路镜头分别报出的，按 id 归组；脚本只保留每组第一个',
+      items: { type: 'array', items: { type: 'string' } },
+    },
+    severityOverrides: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'severity'],
+        properties: {
+          id: { type: 'string' },
+          severity: { type: 'string', enum: ['must-fix', 'should-fix', 'minor'] },
+          reason: { type: 'string' },
+        },
+      },
+    },
+    pathMatrix: {
+      type: 'array',
+      description: '入口路径矩阵校对后透传（可修正 status/note）；无发散者时返回空数组',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'status', 'note'],
+        properties: {
+          path: { type: 'string' },
+          status: { type: 'string', enum: ['covered', 'uncovered', 'n-a'] },
+          note: { type: 'string' },
+        },
+      },
+    },
+    userPathMatrix: {
+      type: 'array',
+      description: '用户体验路的用户可达路径矩阵校对后透传；无 UX 路时返回空数组',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'status', 'note'],
+        properties: {
+          path: { type: 'string' },
+          status: { type: 'string', enum: ['covered', 'uncovered', 'n-a'] },
+          note: { type: 'string' },
+        },
+      },
+    },
+    needEscalate: { type: 'boolean', description: '是否需要补派新视角再挑一轮' },
+    escalateLenses: { type: 'array', items: { type: 'string' } },
+    summary: { type: 'string', description: '一句话总结本轮整体结论' },
+  },
+}
+
+function finalJudgePrompt() {
+  const digest = confirmed.map((f) => ({
+    id: f.id,
+    fromLens: f.fromLens,
+    location: clipText(f.location, 120),
+    problem: clipText(f.problem, 160),
+    severity: f.severity,
+  }))
+  return `你是代码档的汇流判卷。分片判卷已经逐片裁决过，你只做跨片收口，不再看原始证据：
+1) 跨片去重：同一个缺陷被不同镜头分别报出的，按 id 归组（mergeClusters）；脚本只保留每组第一个。不同问题不要硬并。
+2) 统一严重度：跨片口径明显不一致时给 severityOverrides；否则不动。
+3) 校对路径矩阵：核对 status 是否站得住（可修正 status/note），入口矩阵放 pathMatrix，用户体验路的放 userPathMatrix，不要混。
+4) 判断是否需要补派新视角再挑一轮（needEscalate）——只有当改动碰了高风险面（权限/并发/安全/认证/数据迁移/不可逆操作）或你对现有结论明显没把握时才置 true，并写明 escalateLenses。
+5) 一句话总结。
+不要新增缺陷；不要复述正文；拿不准的分组不要建。
+${diverge ? `\n【入口路径矩阵（发散者产出，校对后透传）】\n${JSON.stringify(divergerMatrix, null, 2)}\n` : ''}
+${uxMatrix.length ? `\n【用户体验路的用户可达路径矩阵（核对 status，放 userPathMatrix）】\n${JSON.stringify(uxMatrix, null, 2)}\n` : ''}
+【本轮修改意图】
+${intent}
+${ctxBlock}
+
+【分片保留项（引用式，第 1 轮）】
+${JSON.stringify(digest, null, 2)}
+
+严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
+}
+
+phase('汇流')
+log(`汇流判卷：收口 ${confirmed.length} 条保留项…`)
+const finalJudge = confirmed.length
+  ? ((await agent(finalJudgePrompt(), {
+      label: '汇流:代码终裁',
+      phase: '汇流',
+      agentType: 'critic-pipeline:critic-judge',
+      schema: FINAL_JUDGE_SCHEMA,
+    })) ?? null)
+  : null
+if (!finalJudge && confirmed.length) log('汇流判卷未返回，按分片结果直接合并。')
+
+if (finalJudge?.mergeClusters?.length) {
+  const dropIds = new Set()
+  for (const group of finalJudge.mergeClusters) {
+    if (!Array.isArray(group)) continue
+    for (const id of group.slice(1)) if (typeof id === 'string') dropIds.add(id)
+  }
+  if (dropIds.size) confirmed = confirmed.filter((f) => !dropIds.has(f.id))
+}
+const sevOverrides = new Map(
+  (finalJudge?.severityOverrides ?? [])
+    .filter((x) => x && typeof x.id === 'string')
+    .map((x) => [x.id, x.severity])
+)
+if (sevOverrides.size) {
+  confirmed = confirmed.map((f) => (sevOverrides.has(f.id) ? { ...f, severity: sevOverrides.get(f.id) } : f))
+}
+
+let finalConfirmed = confirmed.map(({ id, ...rest }) => rest)
+const finalPreExisting = preExisting.map(({ id, bucket, ...rest }) => rest)
+let finalPathMatrix = diverge ? (finalJudge?.pathMatrix ?? divergerMatrix) : []
+let finalUserPathMatrix = finalJudge?.userPathMatrix?.length ? finalJudge.userPathMatrix : uxMatrix
+
+// ── ③ 升级门（可选）：汇流判卷判高风险 → 补派 1~2 路全新视角 ──
 let escalateInfo = null
-
-// ── ③ 升级门（可选）：判卷判高风险 → 补派 1~2 路全新视角 ──
-if (allowEscalate && round1?.needEscalate && (round1.escalateLenses?.length ?? 0) > 0) {
+const needEscalate = finalJudge === null ? true : finalJudge?.needEscalate === true
+if (allowEscalate && needEscalate && (finalJudge?.escalateLenses?.length ?? 0) > 0) {
   phase('升级')
-  const extra = round1.escalateLenses.slice(0, maxEscalate)
-  log(`判卷要求升级，补派 ${extra.length} 路：${extra.join(' / ')}`)
+  const extra = (finalJudge?.escalateLenses ?? []).slice(0, maxEscalate)
+  log(`汇流判卷要求升级，补派 ${extra.length} 路：${extra.join(' / ')}`)
 
   const extraRaw = await parallel(
     extra.map((lensDesc, i) => () =>
@@ -605,31 +721,59 @@ if (allowEscalate && round1?.needEscalate && (round1.escalateLenses?.length ?? 0
       }).then((r) => (r ? { ...r, lens: r.lens || `升级-${i + 1}` } : null))
     )
   )
-  const extraFindings = extraRaw
-    .filter(Boolean)
-    .flatMap((r) => (r.findings || []).map((f) => ({ ...f, fromLens: r.lens })))
+  const extraShards = extraRaw
+    .map((r, i) =>
+      r
+        ? {
+            lens: r.lens || `升级-${i + 1}`,
+            items: (r.findings || []).map((f) => ({ id: `F${++findingSeq}`, ...f, fromLens: r.lens || `升级-${i + 1}` })),
+          }
+        : null
+    )
+    .filter((s) => s && s.items.length)
 
-  if (extraFindings.length) {
+  if (extraShards.length) {
     phase('终裁')
-    const round2 = await agent(judgePrompt(extraFindings, 2, []), {
-      label: '判卷:R2',
-      phase: '终裁',
-      agentType: 'critic-pipeline:critic-judge',
-      schema: JUDGE_SCHEMA,
-    })
-    // 二次汇总：合并两轮确认项（按 location+problem 粗去重）
-    const seen = new Set()
-    const merged = []
-    for (const f of [...finalConfirmed, ...(round2?.confirmed ?? [])]) {
-      const k = `${f.location}||${f.problem}`
-      if (!seen.has(k)) {
-        seen.add(k)
-        merged.push(f)
+    const extraShardRaw = await parallel(
+      extraShards.map((shard) => () =>
+        agent(shardJudgePrompt(shard), {
+          label: `分片判卷:${shard.lens}`,
+          phase: '终裁',
+          agentType: 'critic-pipeline:critic-judge',
+          schema: SHARD_JUDGE_SCHEMA,
+        })
+      )
+    )
+    const seenKeys = new Set(finalConfirmed.map((f) => `${f.location}||${f.problem}`))
+    let extraRaised = 0
+    extraShards.forEach((shard, idx) => {
+      const sr = extraShardRaw?.[idx] ?? null
+      const verdicts = new Map((sr?.verdicts ?? []).map((v) => [String(v.id), v]))
+      for (const item of shard.items) {
+        if (sr) {
+          const v = verdicts.get(item.id)
+          if (v?.action === 'drop') {
+            rejected++
+            continue
+          }
+          const severity = v?.severity ?? item.severity
+          const k = `${item.location}||${item.problem}`
+          if (seenKeys.has(k)) continue
+          seenKeys.add(k)
+          const { id, ...rest } = item
+          finalConfirmed.push({ ...rest, severity })
+          extraRaised++
+        } else {
+          const k = `${item.location}||${item.problem}`
+          if (seenKeys.has(k)) continue
+          seenKeys.add(k)
+          const { id, ...rest } = item
+          finalConfirmed.push(rest)
+          extraRaised++
+        }
       }
-    }
-    finalConfirmed = merged
-    rejected += round2?.rejectedCount ?? 0
-    escalateInfo = { reasons: extra, extraRaised: extraFindings.length }
+    })
+    escalateInfo = { reasons: extra, extraRaised }
   } else {
     escalateInfo = { reasons: extra, extraRaised: 0 }
   }
@@ -671,7 +815,7 @@ return {
   userPathMatrix: finalUserPathMatrix,
   rejectedCount: rejected,
   escalate: escalateInfo,
-  summary: round1?.summary ?? '',
+  summary: finalJudge?.summary ?? '',
   // 交给调度员回派施工队时可直接用的文字清单
   handoff: finalConfirmed
     .filter((f) => f.severity !== 'minor')
