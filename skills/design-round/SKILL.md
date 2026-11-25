@@ -19,7 +19,7 @@ description: 跑一轮游戏设计挑刺。按数值平衡、经济成长、趣�
 
 `projectPath` 只用来定位项目，本身不算证据。
 
-可选：`players`（人数，默认 1；2 人以上才开合作与突发意外两维）、`dimensions`（白名单，可强制开启被人数闸关掉的维度）、`depth`（quick 按组并行 / full 逐维一路）、`round`、`history`（之前所有 progressRecord）、`benchmarkBrief`（上轮基准口径）、`known`（未修必修项）、`targetScores`、`maxRounds`、`projectContext`。
+可选：`players`（人数，默认 1；2 人以上才开合作与突发意外两维）、`dimensions`（白名单，可强制开启被人数闸关掉的维度）、`depth`（quick 按组并行 / full 逐维一路）、`round`、`history`（之前所有 progressRecord）、`benchmarkBrief`（上轮基准口径）、`known`（未修必修项）、`targetScores`、`maxRounds`、`projectContext`、`projectRef`（当前项目版本/commit，用于判断基准是否还适用）。
 
 ## 2. 调用 workflow
 
@@ -46,15 +46,28 @@ description: 跑一轮游戏设计挑刺。按数值平衡、经济成长、趣�
 - `unverifiedFeedback`：落不了锚的纯情绪反馈，单列给用户看；
 - `coverage`：本轮缺的证据，照着补模拟或补数值表；
 - `converged` / `stopReason` / `stuckDimensions`：收敛状态、停因、卡在哪几维；
-- `progressRecord`：跨轮快照，**存下来传给下一轮**；
-- `benchmarkBrief`：基准口径，**存下来跨轮复用**；
+- `progressRecord`：跨轮快照，**存下来传给下一轮**（内含 `briefRevision`，跨版本不比分数）；
+- `benchmarkBrief`：基准口径，**写回 `.critic/benchmark-design.json`**，后续轮不必重复调研；
+- `briefStatus` / `briefPath` / `briefRevision`：本轮是复用还是重研（`reused` / `researched` / `stale-researched` / `unused`）、建议写回路径、本轮所用基准修订号——**调度员据此决定是否写回**；
 - `handoff`：按维度分组的施工清单，可直接转给施工队；未达标的维会附「参考做法 + 可核验口径 + 出处」（脚本从 brief 拼，无有效基准时明示不附）。
 
 ## 4. 驱动长期迭代
 
+### 4.1 基准落盘（读写由你负责，脚本不碰磁盘）
+
+- **一次性准备**：确认项目 `.gitignore` 里有 `.critic/`，没有就追加一行（基准笔记是本机调研产物，不入库）。
+- **每轮开跑前**：读 `.critic/benchmark-design.json`，内容作为 `args.benchmarkBrief` 传入；同时从 git 取当前版本/commit 作为 `args.projectRef`（取不到就跳过，不要硬编）。文件不存在或读失败就当没有，照常开跑（脚本会自动调研）。
+- **每轮收结果后**看 `briefStatus`：
+  - `reused`：复用了文件里的基准，**不动文件**；
+  - `researched` / `stale-researched`：本轮重新调研了，把 `benchmarkBrief` **原样写回 `briefPath`**（脚本已带 `revision`/`fetchedAt`/`appliesTo`/`origin`）；
+  - `unused`：本轮没有基准可用（没给参考作品），不写回。
+- **文件被改坏（JSON 解析失败）**：报错并提示人工把文件改名备份后重研，不要静默当作没有文件。
+
+### 4.2 迭代循环
+
 1. 拿 `handoff` 去改数值与设计（本 skill 不改）；
 2. 补齐 `coverage` 里的证据缺口（补模拟命令或补配置路径）；
-3. 再调一轮，传 `round + 1`、`history`（之前所有 progressRecord）、`benchmarkBrief`、`known`（未修的必修项）；
-4. 直到 `converged` 为真，或 `stopReason` 为 `evidence-blocked` / `max-rounds` / `stalled` / `insufficient-evidence` 时停下交人看。
+3. 再调一轮，传 `round + 1`、`history`（之前所有 progressRecord，含 `briefRevision`）、`benchmarkBrief`（从文件读）、`known`（未修的必修项）；
+4. 直到 `converged` 为真，或 `stopReason` 为 `evidence-blocked` / `max-rounds` / `stalled` / `insufficient-evidence` / `brief-revised` 时停下交人看。
 
-停因口径：`converged`（全部活跃维达标且无必修、无证据阻断）优先；其次是证据造假阻断；再其次是达轮数上限；然后是停滞（分数没提升且无新增必修）；最后是取证不足。`continue` 表示证据还不够判、但也没造假，补证据后继续下一轮。
+停因口径：`converged`（全部活跃维达标且无必修、无证据阻断）优先；其次是 `brief-revised`（基准换了，分数不可比，先确认目标分再继续）；再其次是证据造假阻断；达轮数上限；停滞（分数没提升且无新增必修）；取证不足。`continue` 表示证据还不够判、但也没造假，补证据后继续下一轮。

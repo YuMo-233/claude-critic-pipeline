@@ -83,14 +83,17 @@
 | `goal` | 否 | 本轮想改善什么 / 美术方向 |
 | `round` | 否 | 第几轮，默认 1 |
 | `history` | 否 | 往轮 `progressRecord`，用于防重复扣分与判停滞 |
-| `benchmarkBrief` | 否 | 跨轮复用基准口径，传了则跳过调研 |
+| `benchmarkBrief` | 否 | 从 `.critic/benchmark-quality.json` 读出的上轮基准；传了且未过期则跳过调研 |
+| `projectRef` | 否 | 当前项目版本/commit，用于判断基准是否还适用；不传则跳过版本比对 |
 | `depth` | 否 | `quick`（默认，4 路合并）/ `full`（8 路分维） |
 | `targetScores` | 否 | 逐维目标分覆盖，默认 4 |
 | `maxRounds` | 否 | 硬停轮数，默认 4 |
 | `known` | 否 | 已知未修项 |
 | `projectContext` | 否 | 技术栈 / 资源规范 / 美术红线；不传则项目无关 |
 
-**返回**：`dimensions`（分数/目标/扣分项/优点/是否假达标）、`mustFix`/`shouldFix`/`minor`、`plagiarism`、`coverage`（取证缺口）、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`（存给下一轮）、`benchmarkBrief`（跨轮复用）、`handoff`（按维度分组的施工清单，未达标维附参考做法与出处）。
+**返回**：`dimensions`（分数/目标/扣分项/优点/是否假达标）、`mustFix`/`shouldFix`/`minor`、`plagiarism`、`coverage`（取证缺口）、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`（存给下一轮）、`benchmarkBrief`（写回文件）、`briefStatus`/`briefPath`/`briefRevision`（本轮复用还是重研）、`handoff`（按维度分组的施工清单，未达标维附参考做法与出处）。
+
+**基准固化**：脚本不碰磁盘，只做校验与打标。调度员每轮开跑前读 `.critic/benchmark-quality.json` 传 `benchmarkBrief`，收结果后按 `briefStatus` 决定是否写回——`reused` 不动文件，`researched`/`stale-researched` 原样写回 `briefPath`（`revision` 已由脚本 +1），`unused` 不写回。过期只认变更：`benchmarkRefs` 集合变了，或 `projectRef` 与 `appliesTo` 不一致；`fetchedAt` 只记录不触发。基准换了导致分数不可比时，停因给 `brief-revised`。
 
 **长期迭代**由调度员驱动：拿 `handoff` 去改画面 → 补 `coverage` → 带 `round+1`/`history`/`benchmarkBrief` 再调一轮，直到收敛或触停。
 
@@ -140,11 +143,11 @@
 | `players` | 否 | 人数，默认 1；2 人以上开合作/意外三维 |
 | `dimensions` | 否 | 维度白名单，可强制开启被人数闸关掉的维 |
 | `projectPath` | 否 | 项目根路径，用于定位；本身不算证据 |
-| `round` / `history` / `benchmarkBrief` / `known` / `targetScores` / `maxRounds` / `depth` / `projectContext` | 否 | 同画面档 |
+| `round` / `history` / `benchmarkBrief` / `projectRef` / `known` / `targetScores` / `maxRounds` / `depth` / `projectContext` | 否 | 同画面档；本档基准文件为 `.critic/benchmark-design.json` |
 
 四类证据（`simPlan.run` / `simPlan.checks` / `simPlan.codePaths` / `feedback` / `benchmarkRefs`）至少给一个，否则直接早退。
 
-**返回**：`dimensions`（分数/目标/扣分项/优点/是否假达标/是否豁免）、`mustFix`/`shouldFix`/`minor`、`evidenceIntegrity`（造假硬阻断）、`unverifiedFeedback`（落不了锚的反馈）、`coverage`、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`、`benchmarkBrief`、`handoff`（未达标维附参考做法与出处，规则同画面档）。
+**返回**：`dimensions`（分数/目标/扣分项/优点/是否假达标/是否豁免）、`mustFix`/`shouldFix`/`minor`、`evidenceIntegrity`（造假硬阻断）、`unverifiedFeedback`（落不了锚的反馈）、`coverage`、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`、`benchmarkBrief`、`briefStatus`/`briefPath`/`briefRevision`（固化规则同画面档）、`handoff`（未达标维附参考做法与出处，规则同画面档）。
 
 ## 安装
 
@@ -264,7 +267,7 @@ critic-pipeline/
 
 - 零成本干跑（不调真实子代理，只验参数流动、分片判卷合并与收敛判定）：
   - `node scripts/dryrun-critic-round.cjs <case>`：normal / cleanup / explicit-lenses / nodiff / escalate / dropall
-  - `node scripts/dryrun-quality-round.cjs <case>`：normal / plagiarism / converged / stalled / noref / nocapture / lensfail
-  - `node scripts/dryrun-design-round.cjs <case>`：normal / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified
+  - `node scripts/dryrun-quality-round.cjs <case>`：normal / plagiarism / converged / stalled / noref / nocapture / researchfail / lensfail / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
+  - `node scripts/dryrun-design-round.cjs <case>`：normal / researchfail / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
 - ADR：`D:\app\YuMoBox\docs\adr\0055-critic-pipeline-workflow.md`
 - 团队台本：`D:\app\YuMoBox\.claude\team-kits\standard-kit.json`（干活用团队，挑刺用本插件，两者解耦）

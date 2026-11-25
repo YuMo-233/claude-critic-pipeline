@@ -20,6 +20,27 @@ const DIM_KEYS = [
   'ui-hud-visual',
 ]
 
+// 构造一份「已落盘」的基准文件内容（含元数据），供复用/过期用例
+function storedBrief(over) {
+  const base = {
+    refs: ['MockRefA'],
+    revision: 3,
+    fetchedAt: '2026-11-20',
+    appliesTo: 'v1',
+    origin: 'research',
+    dimensions: DIM_KEYS.map((k) => ({
+      key: k,
+      referenceApproach: '文件里的参考做法 ' + k,
+      verifiableCriteria: ['文件口径 ' + k],
+      deductionPoints: ['文件扣分点 ' + k],
+      targetScore: 4,
+    })),
+    sources: [{ title: 'MockRefA 官方文档', url: 'https://example.invalid/a' }],
+    caveats: 'stored brief',
+  }
+  return Object.assign(base, over || {})
+}
+
 const argsByCase = {
   normal: {
     benchmarkRefs: ['MockRefA', 'MockRefB'],
@@ -69,10 +90,6 @@ const argsByCase = {
     benchmarkRefs: ['MockRefA'],
     shots: ['mock/shots/home.png'],
   },
-  researchfail: {
-    benchmarkRefs: ['MockRefA'],
-    shots: ['mock/shots/home.png'],
-  },
   converged: {
     benchmarkRefs: ['MockRefA'],
     shots: ['mock/shots/home.png'],
@@ -111,6 +128,105 @@ const argsByCase = {
       },
     ],
   },
+  // ── brief 固化 ──
+  fresh: {
+    benchmarkRefs: ['MockRefA'],
+    shots: ['mock/shots/home.png'],
+    projectRef: 'v9',
+    round: 1,
+    depth: 'quick',
+  },
+  reuse: {
+    benchmarkRefs: ['MockRefA'],
+    shots: ['mock/shots/home.png'],
+    projectRef: 'v1',
+    benchmarkBrief: storedBrief(),
+    round: 2,
+    history: [
+      {
+        round: 1,
+        scores: Object.fromEntries(DIM_KEYS.map((k) => [k, 3])),
+        mustFixCount: 2,
+        plagiarismBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+        briefRevision: 3,
+      },
+    ],
+  },
+  'stale-refs': {
+    benchmarkRefs: ['MockRefA'],
+    shots: ['mock/shots/home.png'],
+    benchmarkBrief: storedBrief({ refs: ['OldRef'] }),
+    round: 1,
+  },
+  'stale-version': {
+    benchmarkRefs: ['MockRefA'],
+    shots: ['mock/shots/home.png'],
+    projectRef: 'v2',
+    benchmarkBrief: storedBrief(),
+    round: 1,
+  },
+  fallback: {
+    benchmarkRefs: ['MockRefA'],
+    shots: ['mock/shots/home.png'],
+    benchmarkBrief: storedBrief({ origin: 'fallback', revision: 0, appliesTo: '', dimensions: [] }),
+    round: 1,
+  },
+  partial: {
+    benchmarkRefs: ['MockRefA'],
+    shots: ['mock/shots/home.png'],
+    benchmarkBrief: storedBrief({
+      dimensions: storedBrief().dimensions.slice(0, 2),
+    }),
+    round: 2,
+    history: [
+      {
+        round: 1,
+        scores: Object.fromEntries(DIM_KEYS.map((k) => [k, 3])),
+        mustFixCount: 2,
+        plagiarismBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+        briefRevision: 3,
+      },
+    ],
+  },
+  briefrevised: {
+    benchmarkRefs: ['MockRefA'],
+    shots: ['mock/shots/home.png'],
+    projectRef: 'v1',
+    benchmarkBrief: storedBrief({ revision: 2 }),
+    round: 2,
+    history: [
+      {
+        round: 1,
+        scores: Object.fromEntries(DIM_KEYS.map((k) => [k, 3])),
+        mustFixCount: 2,
+        plagiarismBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+        briefRevision: 1,
+      },
+    ],
+  },
+  oldhistory: {
+    benchmarkRefs: ['MockRefA'],
+    shots: ['mock/shots/home.png'],
+    projectRef: 'v1',
+    benchmarkBrief: storedBrief({ revision: 2 }),
+    round: 2,
+    history: [
+      {
+        round: 1,
+        scores: Object.fromEntries(DIM_KEYS.map((k) => [k, 3])),
+        mustFixCount: 2,
+        plagiarismBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+      },
+    ],
+  },
 }
 
 const harness = `
@@ -121,6 +237,7 @@ const DIM_KEYS = ${JSON.stringify(DIM_KEYS)}
 function mockBrief() {
   return {
     refs: ['MockRefA', 'MockRefB'],
+    fetchedAt: '2026-11-26',
     dimensions: DIM_KEYS.map((k) => ({
       key: k,
       referenceApproach: 'mock 参考做法 ' + k,
@@ -295,6 +412,56 @@ __run()
     if (CASE === 'researchfail') {
       asserts.push(['无有效基准时不出参考做法', !h.includes('参考做法（')])
       asserts.push(['无有效基准时明示', h.includes('本轮无有效基准 brief')])
+      asserts.push(['researchfail: 占位 brief 不写回', r.briefStatus === 'unused'])
+    }
+    // ── 断言：brief 固化 ──
+    const researchCalls = agentCalls.filter((c) => c.label.includes('调研')).length
+    if (CASE === 'fresh') {
+      asserts.push(['fresh: briefStatus=researched', r.briefStatus === 'researched'])
+      asserts.push(['fresh: revision=1', r.briefRevision === 1])
+      asserts.push(['fresh: origin=research', r.benchmarkBrief?.origin === 'research'])
+      asserts.push(['fresh: appliesTo=projectRef', r.benchmarkBrief?.appliesTo === 'v9'])
+      asserts.push(['fresh: fetchedAt 来自调研', r.benchmarkBrief?.fetchedAt === '2026-11-26'])
+      asserts.push(['fresh: 调研跑了一次', researchCalls === 1])
+      asserts.push(['fresh: briefPath 正确', r.briefPath === '.critic/benchmark-quality.json'])
+    }
+    if (CASE === 'reuse') {
+      asserts.push(['reuse: briefStatus=reused', r.briefStatus === 'reused'])
+      asserts.push(['reuse: revision 沿用 3', r.briefRevision === 3])
+      asserts.push(['reuse: 不重复调研', researchCalls === 0])
+      asserts.push(['reuse: 用文件里的参考做法', r.benchmarkBrief?.dimensions?.[0]?.referenceApproach === '文件里的参考做法 ' + DIM_KEYS[0]])
+    }
+    if (CASE === 'stale-refs') {
+      asserts.push(['stale-refs: briefStatus=stale-researched', r.briefStatus === 'stale-researched'])
+      asserts.push(['stale-refs: revision=4', r.briefRevision === 4])
+      asserts.push(['stale-refs: 重新调研', researchCalls === 1])
+    }
+    if (CASE === 'stale-version') {
+      asserts.push(['stale-version: briefStatus=stale-researched', r.briefStatus === 'stale-researched'])
+      asserts.push(['stale-version: revision=4', r.briefRevision === 4])
+    }
+    if (CASE === 'fallback') {
+      asserts.push(['fallback: briefStatus=stale-researched', r.briefStatus === 'stale-researched'])
+      asserts.push(['fallback: revision=1', r.briefRevision === 1])
+      asserts.push(['fallback: 重研后 origin=research', r.benchmarkBrief?.origin === 'research'])
+    }
+    if (CASE === 'partial') {
+      asserts.push(['partial: briefStatus=reused', r.briefStatus === 'reused'])
+      asserts.push(['partial: 维度补齐到 8', (r.benchmarkBrief?.dimensions ?? []).length === 8])
+      asserts.push([
+        'partial: 缺维为占位',
+        (r.benchmarkBrief?.dimensions ?? []).some(
+          (d) => d.key === 'post-processing' && String(d.referenceApproach).includes('基准未覆盖')
+        ),
+      ])
+    }
+    if (CASE === 'briefrevised') {
+      asserts.push(['briefrevised: stopReason=brief-revised', r.stopReason === 'brief-revised'])
+      asserts.push(['briefrevised: progressRecord 带 briefRevision', r.progressRecord?.briefRevision === 2])
+    }
+    if (CASE === 'oldhistory') {
+      asserts.push(['oldhistory: 不误判 brief-revised', r.stopReason !== 'brief-revised'])
+      asserts.push(['oldhistory: progressRecord 带 briefRevision', r.progressRecord?.briefRevision === 2])
     }
     let failed = 0
     for (const [name, ok] of asserts) {

@@ -69,6 +69,8 @@ const A = (() => {
 //   args.benchmarkBrief  对象   —— 跨轮复用的基准 brief，可选；不传且有参考作品则本轮先调研
 //   args.depth           字符串 —— quick（默认，分组合并）/ full（逐维分路），可选
 //   args.targetScores    对象   —— 逐维目标分覆盖，可选；默认 4
+//   args.projectRef      字符串 —— 当前项目版本/commit，可选；与 brief.appliesTo 比对判过期，
+//                                  不传则跳过该项检查（不硬编，避免拿错值误判）
 //   args.projectContext  字符串 —— 项目上下文（引擎/品类/目标玩家），可选
 // ─────────────────────────────────────────────────────────────
 
@@ -249,6 +251,109 @@ let brief =
   A?.benchmarkBrief && typeof A.benchmarkBrief === 'object' ? A.benchmarkBrief : null
 let evidence = null
 
+// ── brief 固化：脚本不碰磁盘，只做「校验 + 打标」──
+// 读写由调度员负责（见 SKILL.md）；脚本决定本轮是复用文件里的还是重新调研。
+const BRIEF_PATH = '.critic/benchmark-design.json'
+
+function refsKey(refs) {
+  return (Array.isArray(refs) ? refs : [])
+    .map((r) => String(r).trim())
+    .filter(Boolean)
+    .sort()
+    .join('|')
+}
+
+// 只留本档认识的维；缺失的按本档默认口径补齐并提示
+function normalizeBrief(raw, keys) {
+  const known = new Set(DIMENSIONS.map((d) => d.key))
+  const out = []
+  const seen = new Set()
+  for (const d of Array.isArray(raw?.dimensions) ? raw.dimensions : []) {
+    if (!d || typeof d !== 'object' || !known.has(String(d.key)) || seen.has(d.key)) continue
+    seen.add(d.key)
+    out.push({
+      key: d.key,
+      referenceApproach:
+        typeof d.referenceApproach === 'string' && d.referenceApproach.trim()
+          ? d.referenceApproach
+          : '（基准未覆盖，按通用质量线判断）',
+      verifiableCriteria: (Array.isArray(d.verifiableCriteria) ? d.verifiableCriteria : []).filter(
+        (c) => typeof c === 'string' && c.trim()
+      ),
+      deductionPoints: (Array.isArray(d.deductionPoints) ? d.deductionPoints : []).filter(
+        (c) => typeof c === 'string' && c.trim()
+      ),
+      targetScore:
+        Number.isFinite(Number(d.targetScore)) && Number(d.targetScore) > 0
+          ? Math.min(5, Math.max(1, Number(d.targetScore)))
+          : DEFAULT_TARGET,
+    })
+  }
+  for (const key of keys) {
+    if (seen.has(key)) continue
+    const dim = DIMENSIONS.find((d) => d.key === key)
+    out.push({
+      key,
+      referenceApproach: '（基准未覆盖，按通用质量线判断）',
+      verifiableCriteria: [],
+      deductionPoints: [],
+      targetScore: DEFAULT_TARGET,
+    })
+    log(`brief 缺维度「${dim?.name ?? key}」，按本档默认口径补齐。`)
+  }
+  return out
+}
+
+const projectRef = A?.projectRef ? String(A.projectRef).trim() : ''
+
+// 新鲜度只认变更触发：参考作品集合变了，或项目版本与 appliesTo 不一致。
+// fetchedAt 只做记录，不参与过期判定（参考作品不会随时间变化，硬设天数只会白跑调研）。
+let briefStatus = benchmarkRefs.length ? 'researched' : 'unused'
+let rejectedBriefRevision = null
+
+if (brief) {
+  const origin = brief.origin === 'research' ? 'research' : 'fallback'
+  const refsChanged = refsKey(brief.refs) !== refsKey(benchmarkRefs)
+  const versionChanged =
+    !!projectRef && !!brief.appliesTo && projectRef !== String(brief.appliesTo)
+  if (origin !== 'research' || refsChanged || versionChanged) {
+    rejectedBriefRevision = Number.isFinite(Number(brief.revision)) ? Number(brief.revision) : null
+    const why =
+      origin !== 'research'
+        ? 'brief 来源是占位兜底（origin=fallback）'
+        : refsChanged
+          ? '参考作品集合变了'
+          : '项目版本与 appliesTo 不一致'
+    if (benchmarkRefs.length) {
+      log(`brief 不可复用（${why}），本轮重新调研。`)
+      briefStatus = 'stale-researched'
+    } else {
+      log(`brief 不可复用（${why}），且本轮未给参考作品，无法重研，退化为通用质量线。`)
+      briefStatus = 'unused'
+    }
+    brief = null
+  } else {
+    brief = { ...brief, dimensions: normalizeBrief(brief, activeDims.map((d) => d.key)) }
+    briefStatus = 'reused'
+  }
+}
+
+function stampBrief(raw) {
+  const baseRev = Number.isFinite(rejectedBriefRevision)
+    ? rejectedBriefRevision
+    : Number.isFinite(Number(prevRecord?.briefRevision))
+      ? Number(prevRecord.briefRevision)
+      : 0
+  return {
+    ...raw,
+    refs: benchmarkRefs.slice(),
+    revision: baseRev + 1,
+    fetchedAt: typeof raw?.fetchedAt === 'string' ? raw.fetchedAt : '',
+    appliesTo: projectRef || String(raw?.appliesTo ?? ''),
+    origin: 'research',
+  }
+}
+
 // ── 基准 brief 与目标分 ──
 function targetFor(key) {
   const override = Number(targetScores?.[key])
@@ -270,6 +375,10 @@ function fallbackBrief(caveat) {
     })),
     sources: [],
     caveats: caveat,
+    revision: 0,
+    fetchedAt: '',
+    appliesTo: '',
+    origin: 'fallback',
   }
 }
 
@@ -292,7 +401,7 @@ function briefRows(keys) {
 const BRIEF_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['refs', 'dimensions', 'sources', 'caveats'],
+  required: ['refs', 'dimensions', 'sources', 'caveats', 'fetchedAt'],
   properties: {
     refs: {
       type: 'array',
@@ -338,6 +447,10 @@ const BRIEF_SCHEMA = {
       },
     },
     caveats: { type: 'string', description: '资料不足/把握不大的地方，如实写' },
+    fetchedAt: {
+      type: 'string',
+      description: '本次调研日期，格式 YYYY-MM-DD（用你已知的当前日期；脚本会补 revision/appliesTo/origin，不用你填）',
+    },
   },
 }
 
@@ -357,6 +470,7 @@ ${activeDims.map((d) => `- ${d.key}（${d.name}）：${d.prompt}`).join('\n')}
 - 查不到就写「公开资料不足」，按通用质量线给标准；不要编造具体数值。
 - 多部参考作品时按各自强项写，不要凑成一个平均标准。
 - sources 只放你真看过的公开页面；没看就空数组。
+- fetchedAt：本次调研日期，格式 YYYY-MM-DD（用你已知的当前日期）。
 
 ${knownBlock}
 严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
@@ -454,10 +568,20 @@ const researchRaw = prep?.[0] ?? null
 const evidenceRaw = prep?.[1] ?? null
 
 if (researchRaw) {
-  brief = researchRaw
-  log(`基准 brief 完成：${brief?.dimensions?.length ?? 0} 维${brief?.caveats ? `（${brief.caveats}）` : ''}`)
+  brief = stampBrief({
+    ...researchRaw,
+    dimensions: normalizeBrief(researchRaw, activeDims.map((d) => d.key)),
+  })
+  log(
+    `基准 brief 完成：${brief?.dimensions?.length ?? 0} 维（revision ${brief.revision}）` +
+      `${brief?.caveats ? `（${brief.caveats}）` : ''}`
+  )
 } else if (!brief) {
-  brief = fallbackBrief(benchmarkRefs.length ? '基准调研未产出，本轮按通用质量线评分' : '未给参考作品，按通用质量线评分')
+  brief = fallbackBrief(
+    benchmarkRefs.length ? '基准调研未产出，本轮按通用质量线评分' : '未给参考作品，按通用质量线评分'
+  )
+  // 调研没产出有效结果：占位 brief 不写回文件，下轮重新调研
+  briefStatus = 'unused'
   log('没有可用基准 brief，退化为通用质量线。')
 }
 
@@ -1252,8 +1376,17 @@ const prevMustFixCount = Number(prevRecord?.mustFixCount)
 const newMustFix = Number.isFinite(prevMustFixCount) ? mustFix.length > prevMustFixCount : true
 const stagnated = !!prevScores && round > 1 && !improved && !newMustFix
 
+const briefRevisionNow = Number.isFinite(Number(brief?.revision)) ? Number(brief.revision) : null
+const prevBriefRevision = Number.isFinite(Number(prevRecord?.briefRevision))
+  ? Number(prevRecord.briefRevision)
+  : null
+// 旧条目缺 briefRevision 视为「版本不明」，不参与判定（向前兼容）
+const briefChanged =
+  briefRevisionNow !== null && prevBriefRevision !== null && briefRevisionNow !== prevBriefRevision
+
 let stopReason = 'continue'
 if (converged) stopReason = 'converged'
+else if (briefChanged) stopReason = 'brief-revised'
 else if (evidenceBlocked) stopReason = 'evidence-blocked'
 else if (round >= maxRounds) stopReason = 'max-rounds'
 else if (stagnated) stopReason = 'stalled'
@@ -1275,6 +1408,8 @@ const progressRecord = {
   activeDimKeys: activeDims.map((d) => d.key),
   mustFixCount: mustFix.length,
   mustFixLocations: mustFix.map((f) => `${f.dimension ?? ''}:${f.location ?? ''}`),
+  // 本轮所用基准修订号：调度员记进 history，下次据此判 brief-revised
+  briefRevision: briefRevisionNow,
   evidenceBlocked,
   hollowDimensions: [...hollowDims],
   coverageGapCount: coverage.length,
@@ -1372,8 +1507,12 @@ return {
   hasFeedback,
   benchmarkRefs,
   activeDimKeys: activeDims.map((d) => d.key),
-  // 基准 brief：调度员缓存后传回下一轮，避免重复调研
+  // 基准 brief：调度员写回 .critic/benchmark-design.json，下轮读出传回，避免重复调研
   benchmarkBrief: brief,
+  // brief 固化信号：调度员据此决定是否写回（只在重研后写回并 +1，复用轮不动文件）
+  briefStatus,
+  briefPath: BRIEF_PATH,
+  briefRevision: briefRevisionNow,
   evidence,
   dimensions: dimResults,
   confirmed,

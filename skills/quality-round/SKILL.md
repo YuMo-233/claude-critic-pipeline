@@ -24,7 +24,7 @@ description: 跑一轮画面挑刺。先建立参考作品基准，再执行取�
 
 三个能出证据的入口（`run` / `shots` / `outputDir`）至少给一个，否则无法判画面。
 
-可选：`goal`（本轮想改善什么）、`projectContext`（技术栈与美术红线）、`known`（已知未修项）、`targetScores`（逐维目标分）、`depth`（quick 四路合并 / full 八路分维）、`maxRounds`。
+可选：`goal`（本轮想改善什么）、`projectContext`（技术栈与美术红线）、`known`（已知未修项）、`targetScores`（逐维目标分）、`depth`（quick 四路合并 / full 八路分维）、`maxRounds`、`projectRef`（当前项目版本/commit，用于判断基准是否还适用）。
 
 ## 2. 调用 workflow
 
@@ -49,15 +49,28 @@ description: 跑一轮画面挑刺。先建立参考作品基准，再执行取�
 - `plagiarism`：是否硬阻断、风险明细、借鉴与抄袭的归置；
 - `coverage`：本轮没拍到的场景，照着补拍；
 - `converged` / `stopReason` / `stuckDimensions`：收敛状态、停因、卡在哪几维；
-- `progressRecord`：跨轮快照，**存下来传给下一轮**；
-- `benchmarkBrief`：基准口径，**存下来跨轮复用**，后续轮不必重复调研；
+- `progressRecord`：跨轮快照，**存下来传给下一轮**（内含 `briefRevision`，跨版本不比分数）；
+- `benchmarkBrief`：基准口径，**写回 `.critic/benchmark-quality.json`**，后续轮不必重复调研；
+- `briefStatus` / `briefPath` / `briefRevision`：本轮是复用还是重研（`reused` / `researched` / `stale-researched` / `unused`）、建议写回路径、本轮所用基准修订号——**调度员据此决定是否写回**；
 - `handoff`：按维度分组的施工清单，可直接转给施工队；未达标的维会附「参考做法 + 可核验口径 + 出处」（脚本从 brief 拼，无有效基准时明示不附）。
 
 ## 4. 驱动长期迭代
 
+### 4.1 基准落盘（读写由你负责，脚本不碰磁盘）
+
+- **一次性准备**：确认项目 `.gitignore` 里有 `.critic/`，没有就追加一行（基准笔记是本机调研产物，不入库）。
+- **每轮开跑前**：读 `.critic/benchmark-quality.json`，内容作为 `args.benchmarkBrief` 传入；同时从 git 取当前版本/commit 作为 `args.projectRef`（取不到就跳过，不要硬编）。文件不存在或读失败就当没有，照常开跑（脚本会自动调研）。
+- **每轮收结果后**看 `briefStatus`：
+  - `reused`：复用了文件里的基准，**不动文件**；
+  - `researched` / `stale-researched`：本轮重新调研了，把 `benchmarkBrief` **原样写回 `briefPath`**（脚本已带 `revision`/`fetchedAt`/`appliesTo`/`origin`）；
+  - `unused`：本轮没有基准可用，不写回。
+- **文件被改坏（JSON 解析失败）**：报错并提示人工把文件改名备份后重研，不要静默当作没有文件。
+
+### 4.2 迭代循环
+
 1. 拿 `handoff` 去改画面（本 skill 不改）；
 2. 补齐 `coverage` 里的取证缺口（补场景或补 metrics 命令）；
-3. 再调一轮，传 `round + 1`、`history`（之前所有 progressRecord）、`benchmarkBrief`、`known`（未修的必修项）；
-4. 直到 `converged` 为真，或 `stopReason` 为 `plagiarism-blocked` / `max-rounds` / `stalled` / `insufficient-evidence` 时停下交人看。
+3. 再调一轮，传 `round + 1`、`history`（之前所有 progressRecord，含 `briefRevision`）、`benchmarkBrief`（从文件读）、`known`（未修的必修项）；
+4. 直到 `converged` 为真，或 `stopReason` 为 `plagiarism-blocked` / `max-rounds` / `stalled` / `insufficient-evidence` / `brief-revised` 时停下交人看。
 
-停因口径：`converged`（八维全部达标且无必修、无抄袭）优先；其次是抄袭阻断；再其次是达轮数上限；然后是停滞（分数没提升且无新增必修）；取证不足。
+停因口径：`converged`（八维全部达标且无必修、无抄袭）优先；其次是 `brief-revised`（基准换了，分数不可比，先确认目标分再继续）；再其次是抄袭阻断；达轮数上限；停滞（分数没提升且无新增必修）；取证不足。

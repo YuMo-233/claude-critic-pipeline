@@ -29,6 +29,27 @@ const simPlan = {
   codePaths: ['data/boss.csv'],
 }
 
+// 构造一份「已落盘」的基准文件内容（含元数据），供复用/过期用例
+function storedBrief(over) {
+  const base = {
+    refs: ['MockRefA'],
+    revision: 3,
+    fetchedAt: '2026-11-20',
+    appliesTo: 'v1',
+    origin: 'research',
+    dimensions: DIM_KEYS.map((k) => ({
+      key: k,
+      referenceApproach: '文件里的参考做法 ' + k,
+      verifiableCriteria: ['文件口径 ' + k],
+      deductionPoints: ['文件扣分点 ' + k],
+      targetScore: 4,
+    })),
+    sources: [{ title: 'MockRefA 官方攻略', url: 'https://example.invalid/a' }],
+    caveats: 'stored brief',
+  }
+  return Object.assign(base, over || {})
+}
+
 const argsByCase = {
   normal: {
     goal: '让第三章难度更平滑',
@@ -147,6 +168,135 @@ const argsByCase = {
     players: 1,
     round: 1,
   },
+  // ── brief 固化 ──
+  fresh: {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    simPlan,
+    feedback: { text: '第3章太难了' },
+    benchmarkRefs: ['MockRefA'],
+    players: 4,
+    projectRef: 'v9',
+    round: 1,
+    depth: 'quick',
+  },
+  reuse: {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    simPlan,
+    feedback: { text: '第3章太难了' },
+    benchmarkRefs: ['MockRefA'],
+    players: 4,
+    projectRef: 'v1',
+    benchmarkBrief: storedBrief(),
+    round: 2,
+    history: [
+      {
+        round: 1,
+        scores: Object.fromEntries(DIM_KEYS.map((k) => [k, 3])),
+        mustFixCount: 2,
+        evidenceBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+        briefRevision: 3,
+      },
+    ],
+  },
+  'stale-refs': {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    simPlan,
+    feedback: { text: '第3章太难了' },
+    benchmarkRefs: ['MockRefA'],
+    players: 4,
+    benchmarkBrief: storedBrief({ refs: ['OldRef'] }),
+    round: 1,
+  },
+  'stale-version': {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    simPlan,
+    feedback: { text: '第3章太难了' },
+    benchmarkRefs: ['MockRefA'],
+    players: 4,
+    projectRef: 'v2',
+    benchmarkBrief: storedBrief(),
+    round: 1,
+  },
+  fallback: {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    simPlan,
+    feedback: { text: '第3章太难了' },
+    benchmarkRefs: ['MockRefA'],
+    players: 4,
+    benchmarkBrief: storedBrief({ origin: 'fallback', revision: 0, appliesTo: '', dimensions: [] }),
+    round: 1,
+  },
+  partial: {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    simPlan,
+    feedback: { text: '第3章太难了' },
+    benchmarkRefs: ['MockRefA'],
+    players: 4,
+    benchmarkBrief: storedBrief({ dimensions: storedBrief().dimensions.slice(0, 2) }),
+    round: 2,
+    history: [
+      {
+        round: 1,
+        scores: Object.fromEntries(DIM_KEYS.map((k) => [k, 3])),
+        mustFixCount: 2,
+        evidenceBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+        briefRevision: 3,
+      },
+    ],
+  },
+  briefrevised: {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    simPlan,
+    feedback: { text: '第3章太难了' },
+    benchmarkRefs: ['MockRefA'],
+    players: 4,
+    projectRef: 'v1',
+    benchmarkBrief: storedBrief({ revision: 2 }),
+    round: 2,
+    history: [
+      {
+        round: 1,
+        scores: Object.fromEntries(DIM_KEYS.map((k) => [k, 3])),
+        mustFixCount: 2,
+        evidenceBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+        briefRevision: 1,
+      },
+    ],
+  },
+  oldhistory: {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    simPlan,
+    feedback: { text: '第3章太难了' },
+    benchmarkRefs: ['MockRefA'],
+    players: 4,
+    projectRef: 'v1',
+    benchmarkBrief: storedBrief({ revision: 2 }),
+    round: 2,
+    history: [
+      {
+        round: 1,
+        scores: Object.fromEntries(DIM_KEYS.map((k) => [k, 3])),
+        mustFixCount: 2,
+        evidenceBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+      },
+    ],
+  },
 }
 
 const harness = `
@@ -157,6 +307,7 @@ const DIM_KEYS = ${JSON.stringify(DIM_KEYS)}
 function mockBrief() {
   return {
     refs: ['MockRefA'],
+    fetchedAt: '2026-11-26',
     dimensions: DIM_KEYS.map((k) => ({
       key: k,
       referenceApproach: 'mock 参考做法 ' + k,
@@ -327,7 +478,8 @@ function mockShardJudge(prompt, label) {
     score: CASE === 'stalled' ? 4 : 5,
     notes: 'mock 分片复核',
   }))
-  const keep = CASE === 'normal' || CASE === 'stalled'
+  // briefrevised 用例需要至少一条 mustFix，否则会先判 converged、掩盖 brief-revised
+  const keep = CASE === 'normal' || CASE === 'stalled' || CASE === 'briefrevised'
   const isNumbers = lens.includes('数值与经济')
   const verdicts = idsOf(prompt).map((id) =>
     keep && isNumbers
@@ -407,6 +559,68 @@ __run()
     } else if (CASE === 'researchfail') {
       assert(!/参考做法（/.test(r.handoff), 'researchfail: must not paste placeholder as advice')
       assert(r.handoff.includes('本轮无有效基准 brief'), 'researchfail: should state no valid brief')
+      assert(r.briefStatus === 'unused', 'researchfail: placeholder brief must not be persisted')
+    } else if (CASE === 'nogoal' || CASE === 'noevidence') {
+      // 早退分支没有 briefStatus，跳过固化断言
+    } else if (CASE === 'fresh') {
+      assert(r.briefStatus === 'researched', 'fresh: briefStatus should be researched')
+      assert(r.briefRevision === 1, 'fresh: revision should be 1, got ' + r.briefRevision)
+      assert(r.benchmarkBrief && r.benchmarkBrief.origin === 'research', 'fresh: origin should be research')
+      assert(r.benchmarkBrief && r.benchmarkBrief.appliesTo === 'v9', 'fresh: appliesTo should be projectRef')
+      assert(
+        r.benchmarkBrief && r.benchmarkBrief.fetchedAt === '2026-11-26',
+        'fresh: fetchedAt should come from research agent'
+      )
+      assert(r.briefPath === '.critic/benchmark-design.json', 'fresh: briefPath should be design file')
+      const researchCalls = agentCalls.filter((c) => c.label.includes('调研')).length
+      assert(researchCalls === 1, 'fresh: research should run once, got ' + researchCalls)
+    } else if (CASE === 'reuse') {
+      assert(r.briefStatus === 'reused', 'reuse: briefStatus should be reused')
+      assert(r.briefRevision === 3, 'reuse: revision should stay 3, got ' + r.briefRevision)
+      const researchCalls = agentCalls.filter((c) => c.label.includes('调研')).length
+      assert(researchCalls === 0, 'reuse: must not re-research, got ' + researchCalls)
+      assert(
+        r.benchmarkBrief && r.benchmarkBrief.dimensions[0].referenceApproach === '文件里的参考做法 combat-balance',
+        'reuse: should use stored dimensions'
+      )
+    } else if (CASE === 'stale-refs') {
+      assert(r.briefStatus === 'stale-researched', 'stale-refs: should be stale-researched')
+      assert(r.briefRevision === 4, 'stale-refs: revision should be 4, got ' + r.briefRevision)
+      const researchCalls = agentCalls.filter((c) => c.label.includes('调研')).length
+      assert(researchCalls === 1, 'stale-refs: should re-research, got ' + researchCalls)
+    } else if (CASE === 'stale-version') {
+      assert(r.briefStatus === 'stale-researched', 'stale-version: should be stale-researched')
+      assert(r.briefRevision === 4, 'stale-version: revision should be 4, got ' + r.briefRevision)
+    } else if (CASE === 'fallback') {
+      assert(r.briefStatus === 'stale-researched', 'fallback: fallback brief should trigger re-research')
+      assert(r.briefRevision === 1, 'fallback: revision should be 1, got ' + r.briefRevision)
+      assert(r.benchmarkBrief && r.benchmarkBrief.origin === 'research', 'fallback: re-researched brief origin=research')
+    } else if (CASE === 'partial') {
+      assert(r.briefStatus === 'reused', 'partial: should reuse stored brief')
+      assert(
+        r.benchmarkBrief && r.benchmarkBrief.dimensions.length === 7,
+        'partial: missing dims should be backfilled to 7, got ' +
+          (r.benchmarkBrief && r.benchmarkBrief.dimensions.length)
+      )
+      assert(
+        r.benchmarkBrief &&
+          r.benchmarkBrief.dimensions.some(
+            (d) => d.key === 'surprise-fun' && String(d.referenceApproach).includes('基准未覆盖')
+          ),
+        'partial: backfilled dim should carry placeholder'
+      )
+    } else if (CASE === 'briefrevised') {
+      assert(r.stopReason === 'brief-revised', 'briefrevised: stopReason should be brief-revised')
+      assert(
+        r.progressRecord && r.progressRecord.briefRevision === 2,
+        'briefrevised: progressRecord.briefRevision should be 2'
+      )
+    } else if (CASE === 'oldhistory') {
+      assert(r.stopReason !== 'brief-revised', 'oldhistory: missing briefRevision must not trigger brief-revised')
+      assert(
+        r.progressRecord && r.progressRecord.briefRevision === 2,
+        'oldhistory: progressRecord.briefRevision should be current revision'
+      )
     } else {
       assert(!r.error, 'unexpected error: ' + r.error)
       if (CASE === 'normal') {
