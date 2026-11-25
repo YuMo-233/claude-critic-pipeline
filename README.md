@@ -2,10 +2,11 @@
 
 通用**挑刺流水线**：给一轮代码改动做多视角"找茬"，产出结构化清单，**只挑刺、不修代码**。
 
-一个插件打包两档流水线 + 四个只读角色 + 两个 workflow。装一次，任何仓库都能用：
+一个插件打包三档流水线 + 七个只读角色 + 三个 workflow。装一次，任何仓库都能用：
 
 - **代码档**（`critic-round`）：审一轮代码改动，管正确性、兼容、性能、交互体验；
-- **画面档**（`quality-round`）：审画面表现，拿调用方点名的参考作品当基准，做多轮迭代式挑刺。
+- **画面档**（`quality-round`）：审画面表现，拿调用方点名的参考作品当基准，做多轮迭代式挑刺；
+- **设计档**（`design-round`）：审游戏设计，按数值平衡、经济成长、趣味性结构代理、合作性/合作趣味、突发意外趣味、玩家反馈的心理机制分维挑刺，只认结构证据。
 
 ## 它解决什么
 
@@ -90,25 +91,76 @@
 
 **长期迭代**由调度员驱动：拿 `handoff` 去改画面 → 补 `coverage` → 带 `round+1`/`history`/`benchmarkBrief` 再调一轮，直到收敛或触停。
 
+## 设计档（design-round）
+
+给一套**游戏设计**做迭代式挑刺：数值平衡、经济与成长曲线、趣味性、多人协作、意外乐趣、玩家反馈。核心难点是**趣味性主观**——AI 不能真玩一局说"不爽"，所以本档只查**结构代理指标**，且**玩家原话永远不能当证据**。
+
+**七个设计维度**（每维一个 `minPlayers` 闸）：
+
+| 维度 | 查什么 | 人数闸 |
+|---|---|---|
+| 数值平衡 | 难度曲线、TTK/TTD、数值断崖与正反馈循环 | 1 |
+| 经济与成长曲线 | 产出/消耗速率、通胀、成长斜率与瓶颈 | 1 |
+| 趣味性结构代理 | 反馈密度、选择空间、风险回报结构、失败代价与重试成本 | 1 |
+| 合作性 | 分工必要性、互补收益、搭便车与拖累 | 2 |
+| 合作趣味 | 协作中的沟通需求、共同目标张力、失误的社交后果 | 2 |
+| 突发意外趣味 | 随机事件的结构位置、可回溯性、雪球失控 | 2 |
+| 玩家反馈的心理机制 | 反馈文本 → 心理学机制 → 结构锚点 | 有 `feedback` 才开 |
+
+**玩家反馈怎么处理**：每条反馈必须映射到心理学机制（自主 / 胜任 / 归属 / 心流 / 损失厌恶 / 变比率奖励 / 沉没成本 / 峰终 / 其他），再落到具体数值:行、模拟输出或代码位置。落不了锚的进 `unverifiedFeedback` 单列，**不计分、不阻塞收敛**。纯情绪直接不入账。
+
+一次调用 = 一轮：
+
+```
+① 基准调研（可选）  无基准 brief 且给了 benchmarkRefs 时先跑：把参考作品转成七维可核验口径
+② 取证             执行 simPlan（模拟命令 / 校验命令）
+③ 找茬             按组并行镜头（depth=full 拆逐维）挑刺并自评扣分
+                    玩家反馈维单独走心理机制解析；细节评委同批并行：审假达标 + 证据造假 + 阈值漂移
+④ 判卷             主判卷汇总、去重、下调分数、证据完整性守门
+⑤ 收敛             脚本按双闸门判定收敛 / 停滞 / 硬停
+```
+
+**评分沿用扣分表**：每维满分 5，从 5 往下扣；每笔扣分必须写清「差什么 / 差距多大 / 证据在哪」，且 `anchorKind` 只能是 `numeric-config` / `sim-output` / `code` / `benchmark`——枚举里物理上没有 `feedback`，玩家原话冒充结构证据会被细节评委拦下。
+
+**收敛**：全部活跃维达标（默认 4）+ 无必修项 + 无证据造假阻断。止路还有达 `maxRounds`（默认 4）、停滞、取证不足。
+
+**参数**：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `goal` | 是 | 本轮想改善什么 |
+| `simPlan` | 建议 | `{run, workdir, outputDir, checks[{name,command}], codePaths}` |
+| `feedback` | 否 | 玩家反馈文本，`string` 或 `{text, files[]}`；给了才开反馈维 |
+| `benchmarkRefs` | 否 | 参考作品名，由调用方点名 |
+| `players` | 否 | 人数，默认 1；2 人以上开合作/意外三维 |
+| `dimensions` | 否 | 维度白名单，可强制开启被人数闸关掉的维 |
+| `projectPath` | 否 | 项目根路径，用于定位；本身不算证据 |
+| `round` / `history` / `benchmarkBrief` / `known` / `targetScores` / `maxRounds` / `depth` / `projectContext` | 否 | 同画面档 |
+
+四类证据（`simPlan.run` / `simPlan.checks` / `simPlan.codePaths` / `feedback` / `benchmarkRefs`）至少给一个，否则直接早退。
+
+**返回**：`dimensions`（分数/目标/扣分项/优点/是否假达标/是否豁免）、`mustFix`/`shouldFix`/`minor`、`evidenceIntegrity`（造假硬阻断）、`unverifiedFeedback`（落不了锚的反馈）、`coverage`、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`、`benchmarkBrief`、`handoff`。
+
 ## 安装
 
 ### 前提
 
-已有本地 marketplace（如 `haha-connectors`），插件目录通过 junction 链接进来。
+本仓库**自带 marketplace 清单**（`.claude-plugin/marketplace.json`），仓库根即 marketplace 根，不需要另建 marketplace 目录、也不许用 junction 把插件链到别的 marketplace 里（新版 CLI 会以"source 越界"拒载）。
 
 ### 装插件
 
 ```bash
-# 1. 把插件目录链接进本地 marketplace（免管理员，junction）
-#    源：本仓库；链接到：~/.claude/connectors/marketplace/plugins/critic-pipeline
-powershell -NoProfile -Command "New-Item -ItemType Junction -Path 'C:\Users\Administrator\.claude\connectors\marketplace\plugins\critic-pipeline' -Target 'D:\app\critic-pipeline' | Out-Null"
+# 1. 在 ~/.claude/plugins/known_marketplaces.json 登记 marketplace：
+#    haha-connectors 的 source.path 与 installLocation 都指向本仓库根
+#    （也可用 claude plugin marketplace add <本仓库路径> 让 CLI 自己登记）
 
-# 2. 在 marketplace.json 里登记插件（source 指向 ./plugins/critic-pipeline）
-#    已登记则跳过
-
-# 3. 安装并启用
+# 2. 安装并启用
 claude plugin install critic-pipeline@haha-connectors
 ```
+
+硬约束：marketplace.json 里插件条目的 `source` 必须写 `./`，不能写 `.`——CLI 对 `.` 放行，桌面端 zod 校验（`startsWith('./')`）会拒收，表现为插件"需关注 / 没有可用描述 / 技能 0"。
+
+**验收口径是桌面端插件面板统计非 0（4+3 agents / 3 skills），不是 CLI 全绿。**
 
 装完在 `~/.claude/settings.json` 的 `enabledPlugins` 里确认：
 
@@ -166,7 +218,7 @@ claude plugin install critic-pipeline@haha-connectors
 
 ## 硬约束
 
-- **只挑刺，不修代码**。四个角色都不用 `tools` 白名单，而是用 `disallowedTools` 禁掉全部写工具与子代理派发工具，物理上改不了代码；视觉挑刺者额外保留读图与执行取证命令的能力。
+- **只挑刺，不修代码**。所有角色都不用 `tools` 白名单，而是用 `disallowedTools` 禁掉全部写工具与子代理派发工具，物理上改不了代码；视觉挑刺者额外保留读图与执行取证命令的能力，设计档分析师额外保留执行模拟命令的能力。
 - **不许用 `tools` 白名单**。本机构建下，agent 一旦声明 `tools`，引擎注入的 `StructuredOutput` 会被过滤掉，带 schema 的子代理必然交不出结果。
 - **每轮全新视角**。每轮都是一次性子代理，无记忆，天然"换人挑刺"。
 - **判卷不自审**。判卷的不新增 findings，它自己发现的疑点只走升级门，交给下一轮独立找茬核实。
@@ -180,22 +232,30 @@ critic-pipeline/
 ├── .claude-plugin/
 │   └── plugin.json          # 插件 manifest（打包版）
 ├── agents/
-│   ├── critic-reader.md          # 代码档找茬角色（只读 + 快档）
-│   ├── critic-judge.md           # 判卷角色（只读 + 强档，两档共用）
-│   ├── critic-vision-reader.md   # 画面档：基准调研 / 取证 / 逐维找茬
-│   └── critic-detail-judge.md    # 画面档：细节评委（假达标 + 抄袭）
+│   ├── critic-reader.md               # 代码档找茬角色（只读 + 快档）
+│   ├── critic-judge.md                # 代码档判卷角色（只读 + 强档）
+│   ├── critic-vision-reader.md        # 画面档：基准调研 / 取证 / 逐维找茬
+│   ├── critic-detail-judge.md         # 画面档：细节评委（假达标 + 抄袭）
+│   ├── critic-design-analyst.md       # 设计档：基准调研 / 取证 / 逐维找茬 / 反馈心理机制解析
+│   ├── critic-design-detail-judge.md  # 设计档：细节评委（假达标 + 证据造假 + 阈值漂移）
+│   └── critic-design-judge.md         # 设计档：主判卷
 ├── skills/
 │   ├── critic-round/SKILL.md     # /critic-pipeline:critic-round
-│   └── quality-round/SKILL.md    # /critic-pipeline:quality-round
+│   ├── quality-round/SKILL.md    # /critic-pipeline:quality-round
+│   └── design-round/SKILL.md     # /critic-pipeline:design-round
+├── scripts/
+│   ├── dryrun-quality-round.cjs  # 画面档零成本干跑
+│   └── dryrun-design-round.cjs   # 设计档零成本干跑
 └── workflows/
     ├── critic-round.js           # 代码档流水线
-    └── quality-round.js          # 画面档流水线
+    ├── quality-round.js          # 画面档流水线
+    └── design-round.js           # 设计档流水线
 ```
 
-`CONTEXT.md` 是领域术语表（档位、画面八维、基准与评分、借鉴与抄袭、角色口径）。
+`CONTEXT.md` 是领域术语表（档位、画面八维、设计七维、基准与评分、借鉴与抄袭、角色口径）。
 
 ## 相关
 
-- 零成本干跑：`node scripts/dryrun-quality-round.cjs <case>`（normal / plagiarism / converged / stalled / noref / nocapture / lensfail），不调真实子代理，只验参数流动与收敛判定。
+- 零成本干跑：`node scripts/dryrun-quality-round.cjs <case>`（normal / plagiarism / converged / stalled / noref / nocapture / lensfail）与 `node scripts/dryrun-design-round.cjs <case>`（normal / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified），不调真实子代理，只验参数流动与收敛判定。
 - ADR：`D:\app\YuMoBox\docs\adr\0055-critic-pipeline-workflow.md`
 - 团队台本：`D:\app\YuMoBox\.claude\team-kits\standard-kit.json`（干活用团队，挑刺用本插件，两者解耦）
