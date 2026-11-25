@@ -14,9 +14,13 @@ const body = src.replace('export const meta', 'const meta')
 const DIM_KEYS = [
   'combat-balance',
   'economy-growth',
+  'level-topology',
+  'content-branching',
+  'boss-variety',
   'fun-structure',
   'co-op-synergy',
   'co-op-fun',
+  'coop-differentiation',
   'surprise-fun',
   'feedback-psych',
 ]
@@ -167,6 +171,145 @@ const argsByCase = {
     feedback: { text: '玩着没意思\n就是不好玩' },
     players: 1,
     round: 1,
+  },
+  // ── 分诊 / 目标覆盖 / 切片 ──
+  'triage-map': {
+    goal: '把地图做成视野盲区沙盒，箱庭谜题双人强制合作',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 1,
+    round: 1,
+    depth: 'quick',
+  },
+  'triage-fallback': {
+    goal: '随便优化一下',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 1,
+    round: 1,
+    depth: 'quick',
+  },
+  'goal-uncovered': {
+    goal: '让打击手感更爽，界面更顺手',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 1,
+    round: 1,
+    depth: 'quick',
+  },
+  'accept-uncovered': {
+    goal: '让打击手感更爽，界面更顺手',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 1,
+    round: 1,
+    depth: 'quick',
+    acceptUncovered: true,
+  },
+  scope: {
+    goal: '只看第三章的地图结构',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 1,
+    round: 1,
+    depth: 'quick',
+    dimensions: ['level-topology'],
+    scope: { label: '第三章', units: ['3-1', '3-2'], note: '只看这两关' },
+  },
+  'not-applicable': {
+    goal: '看看 Boss 机制多样性',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 1,
+    round: 1,
+    depth: 'quick',
+  },
+  'cap-findings': {
+    goal: '看战斗数值',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 1,
+    round: 1,
+    depth: 'quick',
+    dimensions: ['combat-balance'],
+  },
+  // ── 复检 ──
+  'verify-fixed': {
+    goal: '复检上一轮的必修项',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 4,
+    round: 2,
+    mode: 'verify',
+    history: [
+      {
+        round: 1,
+        scores: Object.assign(Object.fromEntries(DIM_KEYS.map((k) => [k, 5])), { 'combat-balance': 3 }),
+        mustFixCount: 2,
+        mustFixItems: [
+          {
+            dimension: 'combat-balance',
+            location: 'data/boss.csv:3',
+            problem: 'HP 涨幅过高',
+            severity: 'must-fix',
+            evidence: '2400 vs 1600',
+          },
+          {
+            dimension: 'fun-structure',
+            location: 'src/feedback.js:22',
+            problem: '反馈密度不足',
+            severity: 'must-fix',
+            evidence: '每 3 次操作 1 次反馈',
+          },
+        ],
+        evidenceBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+      },
+    ],
+  },
+  'verify-still': {
+    goal: '复检上一轮的必修项',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 4,
+    round: 2,
+    mode: 'verify',
+    history: [
+      {
+        round: 1,
+        scores: Object.assign(Object.fromEntries(DIM_KEYS.map((k) => [k, 5])), { 'combat-balance': 3 }),
+        mustFixCount: 2,
+        mustFixItems: [
+          {
+            dimension: 'combat-balance',
+            location: 'data/boss.csv:3',
+            problem: 'HP 涨幅过高',
+            severity: 'must-fix',
+            evidence: '2400 vs 1600',
+          },
+          {
+            dimension: 'fun-structure',
+            location: 'src/feedback.js:22',
+            problem: '反馈密度不足',
+            severity: 'must-fix',
+            evidence: '每 3 次操作 1 次反馈',
+          },
+        ],
+        evidenceBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+      },
+    ],
+  },
+  'verify-fallback': {
+    goal: '想复检但没给旧账',
+    projectPath: 'mock/project',
+    simPlan,
+    players: 1,
+    round: 2,
+    mode: 'verify',
+    depth: 'quick',
   },
   // ── brief 固化 ──
   fresh: {
@@ -360,19 +503,71 @@ function dimEntry(k) {
 
 const LENS_DIMS = {
   '数值与经济': ['combat-balance', 'economy-growth'],
+  地图与内容结构: ['level-topology', 'content-branching', 'boss-variety'],
   趣味结构: ['fun-structure'],
-  多人协作: ['co-op-synergy', 'co-op-fun'],
-  突发意外: ['surprise-fun'],
+  多人协作: ['co-op-synergy', 'co-op-fun', 'coop-differentiation'],
+  意外趣味: ['surprise-fun'],
 }
 
-function mockLensFindings(label) {
-  const own = Object.entries(LENS_DIMS).find(([n]) => label.includes(n))?.[1] || DIM_KEYS
-  return {
-    lens: label,
-    dimensions: own.map(dimEntry),
-    findings:
-      CASE === 'simfail'
-        ? []
+const NAME_TO_KEY = {
+  数值平衡: 'combat-balance',
+  经济与成长曲线: 'economy-growth',
+  地图与关卡结构: 'level-topology',
+  收集与分支结构: 'content-branching',
+  'Boss 与敌人机制多样性': 'boss-variety',
+  趣味性结构代理: 'fun-structure',
+  合作性: 'co-op-synergy',
+  合作趣味: 'co-op-fun',
+  双人差分与对等: 'coop-differentiation',
+  突发意外趣味: 'surprise-fun',
+  玩家反馈的心理机制: 'feedback-psych',
+}
+
+function ownDimsOf(label) {
+  const g = Object.entries(LENS_DIMS).find(([n]) => label.includes(n))
+  if (g) return g[1]
+  const name = label.replace('找茬:', '').trim()
+  return NAME_TO_KEY[name] ? [NAME_TO_KEY[name]] : DIM_KEYS
+}
+
+const KEY_TO_NAME = Object.fromEntries(Object.entries(NAME_TO_KEY).map(([n, k]) => [k, n]))
+
+function mockLensFindings(label, prompt) {
+  const base = ownDimsOf(label)
+  // 只看首行「本轮负责 N 个维度：【…】」——维度正文里会提到别的维度名（「归 XX」）
+  const head = String(prompt).split('\\n')[0]
+  const hit = base.filter((k) => head.includes(KEY_TO_NAME[k]))
+  const own = hit.length ? hit : base
+  if (CASE === 'not-applicable' && own.includes('boss-variety')) {
+    return {
+      lens: label,
+      dimensions: [
+        {
+          key: 'boss-variety',
+          status: 'not-applicable',
+          score: 0,
+          deductions: [],
+          strengths: [],
+          statusNote: '本项目没有 Boss',
+        },
+      ],
+      findings: [],
+      coverageGaps: [],
+    }
+  }
+  const findings =
+    CASE === 'simfail'
+      ? []
+      : CASE === 'cap-findings'
+        ? Array.from({ length: 12 }, (_, i) => ({
+            location: 'data/boss.csv:' + (3 + i),
+            problem: '第 ' + (i + 1) + ' 条数值偏差',
+            severity: 'should-fix',
+            confidence: 0.8,
+            evidence: 'mock 证据 ' + (i + 1),
+            dimension: 'combat-balance',
+            anchorKind: 'numeric-config',
+          }))
         : [
             {
               location: 'data/boss.csv:3',
@@ -383,10 +578,76 @@ function mockLensFindings(label) {
               dimension: 'combat-balance',
               anchorKind: 'numeric-config',
             },
-          ],
+          ]
+  return {
+    lens: label,
+    dimensions: own.map(dimEntry),
+    findings,
     coverageGaps: [
       { item: '合作收益实测', why: '本轮没跑多人模拟', neededEvidence: '多人协同收益模拟输出' },
     ],
+  }
+}
+
+function mockTriage() {
+  if (CASE === 'triage-fallback') return null
+  if (CASE === 'triage-map') {
+    return {
+      type: 'level-content',
+      dimensions: ['level-topology', 'content-branching'],
+      adjustments: [{ key: 'content-branching', action: 'add', why: '目标是箱庭谜题，涉及内容分布' }],
+      goalCoverage: [
+        { item: '视野盲区沙盒', dimension: 'level-topology', note: '地图结构' },
+        { item: '双人强制合作', dimension: 'none', note: '不属关卡与内容结构，需另开 coop' },
+      ],
+      uncoveredGoals: [],
+      rationale: 'mock 分诊：关卡与内容结构',
+    }
+  }
+  if (CASE === 'goal-uncovered' || CASE === 'accept-uncovered') {
+    return {
+      type: 'balance-tuning',
+      dimensions: ['combat-balance', 'economy-growth'],
+      adjustments: [],
+      goalCoverage: [{ item: '打击手感', dimension: 'none', note: '现有维度不测手感' }],
+      uncoveredGoals: [
+        { item: '打击手感更爽', why: '十一维里没有手感/输入延迟维度', suggestion: '人工拍板或补自定义维度' },
+      ],
+      rationale: 'mock 分诊：数值平衡，但手感无维可归',
+    }
+  }
+  if (CASE === 'not-applicable') {
+    return {
+      type: 'boss-encounter',
+      dimensions: ['boss-variety'],
+      adjustments: [],
+      goalCoverage: [{ item: 'Boss 机制', dimension: 'boss-variety', note: 'ok' }],
+      uncoveredGoals: [],
+      rationale: 'mock 分诊：Boss 遭遇',
+    }
+  }
+  return {
+    type: 'full-mixed',
+    dimensions: DIM_KEYS,
+    adjustments: [],
+    goalCoverage: [{ item: 'mock 目标', dimension: 'combat-balance', note: 'mock' }],
+    uncoveredGoals: [],
+    rationale: 'mock 分诊：全维',
+  }
+}
+
+function mockVerify(prompt) {
+  const ids = prompt.match(/^V\\d+ \\[/gm) || []
+  const still = CASE === 'verify-still'
+  return {
+    items: ids.map((s) => s.split(' ')[0]).map((id) => ({
+      id,
+      status: still ? 'still-present' : 'fixed',
+      evidence: 'mock 复检证据',
+      note: still ? 'mock 未修好' : 'mock 已修',
+    })),
+    touchedDims: [{ key: 'combat-balance', why: 'mock 改动涉及' }],
+    summary: 'mock 复检结论',
   }
 }
 
@@ -480,7 +741,7 @@ function mockShardJudge(prompt, label) {
   }))
   // briefrevised 用例需要至少一条 mustFix，否则会先判 converged、掩盖 brief-revised
   const keep = CASE === 'normal' || CASE === 'stalled' || CASE === 'briefrevised'
-  const isNumbers = lens.includes('数值与经济')
+  const isNumbers = lens.includes('数值与经济') || lens.includes('数值平衡')
   const verdicts = idsOf(prompt).map((id) =>
     keep && isNumbers
       ? { id, action: 'keep', severity: 'must-fix', reason: 'mock 证据成立' }
@@ -500,15 +761,18 @@ async function agent(prompt, opts = {}) {
     agentType: opts.agentType || '',
     phase: opts.phase || '',
     promptLen: prompt.length,
+    prompt: prompt,
     schemaRequired: opts.schema?.required || [],
   })
   // 先判更具体的前缀：分片判卷的 label 里也带「找茬」，顺序反了会被镜头 mock 抢走
   if (label.startsWith('分片判卷')) return mockShardJudge(prompt, label)
   if (label.startsWith('汇流')) return mockFinalJudge()
+  if (label.startsWith('分诊')) return mockTriage()
+  if (label.startsWith('复检')) return mockVerify(prompt)
   if (label.includes('调研')) return CASE === 'researchfail' ? null : mockBrief()
   if (label.includes('取证')) return mockEvidence()
-  if (label.includes('反馈心理机制')) return mockPsych()
-  if (label.includes('找茬')) return mockLensFindings(label)
+  if (label.includes('心理机制')) return mockPsych()
+  if (label.includes('找茬')) return mockLensFindings(label, prompt)
   if (label.includes('评审')) return mockDetail()
   return null
 }
@@ -526,7 +790,11 @@ async function parallel(thunks) {
 }
 
 function phase() {}
-function log(m) { console.log('[log] ' + m) }
+const logs = []
+function log(m) {
+  logs.push(String(m))
+  console.log('[log] ' + m)
+}
 
 const args = ${JSON.stringify(argsByCase[caseName] || argsByCase.normal)}
 
@@ -598,8 +866,8 @@ __run()
     } else if (CASE === 'partial') {
       assert(r.briefStatus === 'reused', 'partial: should reuse stored brief')
       assert(
-        r.benchmarkBrief && r.benchmarkBrief.dimensions.length === 7,
-        'partial: missing dims should be backfilled to 7, got ' +
+        r.benchmarkBrief && r.benchmarkBrief.dimensions.length === 11,
+        'partial: missing dims should be backfilled to 11, got ' +
           (r.benchmarkBrief && r.benchmarkBrief.dimensions.length)
       )
       assert(
@@ -624,8 +892,9 @@ __run()
     } else {
       assert(!r.error, 'unexpected error: ' + r.error)
       if (CASE === 'normal') {
-        assert(r.activeDimKeys.length === 7, 'normal: activeDims should be 7, got ' + r.activeDimKeys.length)
-        assert(lensCalls.length === 5, 'normal: 5 lenses expected, got ' + lensCalls.length)
+        assert(r.activeDimKeys.length === 11, 'normal: activeDims should be 11, got ' + r.activeDimKeys.length)
+        assert(lensCalls.length === 6, 'normal: 6 lenses expected, got ' + lensCalls.length)
+        assert(r.type === 'full-mixed', 'normal: triage should map to full-mixed, got ' + r.type)
         assert(detailCalls.length === 1, 'normal: detail judge expected')
         assert(r.converged === false, 'normal: should not converge')
         assert(
@@ -654,10 +923,69 @@ __run()
         assert(hintCount === belowCount, 'normal: hints should only sit on below-target dims (' + hintCount + ' vs ' + belowCount + ')')
       }
       if (CASE === 'solo-nofeedback') {
-        assert(r.activeDimKeys.length === 3, 'solo: 3 dims expected, got ' + r.activeDimKeys.length)
-        assert(lensCalls.length === 2, 'solo: 2 lenses expected, got ' + lensCalls.length)
+        assert(r.activeDimKeys.length === 6, 'solo: 6 dims expected, got ' + r.activeDimKeys.length)
+        assert(lensCalls.length === 6, 'solo: explore defaults to full depth (6 lenses), got ' + lensCalls.length)
         assert(!lensCalls.some((c) => c.label.includes('反馈心理机制')), 'solo: psych lens should not run')
-        assert(!r.dimensions.some((d) => d.key.startsWith('co-op-')), 'solo: co-op dims must be absent')
+        assert(!r.dimensions.some((d) => d.key.startsWith('co-op-') || d.key === 'coop-differentiation'), 'solo: co-op dims must be absent')
+      }
+      if (CASE === 'triage-map') {
+        assert(r.type === 'level-content', 'triage-map: type should be level-content, got ' + r.type)
+        assert(r.activeDimKeys.length === 2, 'triage-map: 2 dims expected, got ' + JSON.stringify(r.activeDimKeys))
+        assert(lensCalls.length === 1, 'triage-map: structure group is one lens, got ' + lensCalls.length)
+        assert(r.goalCoverage.some((g) => g.dimension === 'none'), 'triage-map: goalCoverage should keep the none row')
+      }
+      if (CASE === 'triage-fallback') {
+        assert(r.triageFallback === true, 'triage-fallback: flag should be true')
+        assert(r.type === 'full-mixed', 'triage-fallback: should fall back to full-mixed')
+        assert(r.activeDimKeys.length === 6, 'triage-fallback: 6 active (no feedback), got ' + r.activeDimKeys.length)
+        assert(logs.some((l) => l.includes('兜底')), 'triage-fallback: should log fallback')
+      }
+      if (CASE === 'goal-uncovered') {
+        assert(r.stopReason === 'goal-uncovered', 'goal-uncovered: stopReason should be goal-uncovered, got ' + r.stopReason)
+        assert(r.converged === false, 'goal-uncovered: must not converge')
+        assert(r.uncoveredGoals.length === 1, 'goal-uncovered: 1 uncovered goal expected')
+        assert(r.handoff.includes('目标没有维度接住'), 'goal-uncovered: handoff should surface it')
+        assert(r.progressRecord.uncoveredGoals.length === 1, 'goal-uncovered: must persist into progressRecord')
+      }
+      if (CASE === 'accept-uncovered') {
+        assert(r.uncoveredGoals.length === 0, 'accept-uncovered: uncovered should be cleared')
+        assert(r.acceptedUncovered === true, 'accept-uncovered: flag should be echoed')
+        assert(r.stopReason === 'converged', 'accept-uncovered: should converge, got ' + r.stopReason)
+      }
+      if (CASE === 'scope') {
+        assert(r.scope && r.scope.label === '第三章', 'scope: scope should be echoed')
+        assert(
+          lensCalls.every((c) => c.prompt.includes('本轮聚焦切片')),
+          'scope: lens prompts should carry the scope block'
+        )
+      }
+      if (CASE === 'not-applicable') {
+        const bv = r.dimensions.find((d) => d.key === 'boss-variety')
+        assert(bv && bv.status === 'not-applicable', 'not-applicable: dim status expected')
+        assert(r.notApplicable.length === 1, 'not-applicable: should be listed separately')
+        assert(r.converged === true, 'not-applicable: must not block convergence')
+        assert(r.handoff.includes('不适用'), 'not-applicable: handoff should say so')
+      }
+      if (CASE === 'cap-findings') {
+        assert(logs.some((l) => l.includes('已截断 4 条')), 'cap-findings: 12-8 should be truncated and logged')
+        assert(r.confirmed.length === 0, 'cap-findings: mock judge drops all')
+      }
+      if (CASE === 'verify-fixed') {
+        assert(r.mode === 'verify', 'verify-fixed: mode should stay verify')
+        assert(r.touchedDims.includes('combat-balance'), 'verify-fixed: touched should include combat-balance')
+        assert(r.carriedDims.length === 8, 'verify-fixed: 8 untouched dims should be carried, got ' + r.carriedDims.length)
+        assert(r.carriedDims.includes('economy-growth'), 'verify-fixed: economy stays carried (filtered out of the numbers lens)')
+        assert(r.converged === true, 'verify-fixed: should converge, got ' + r.stopReason)
+      }
+      if (CASE === 'verify-still') {
+        assert(r.mode === 'verify', 'verify-still: mode should stay verify')
+        assert(r.verifier && r.verifier.items.every((x) => x.status === 'still-present'), 'verify-still: verdicts')
+        assert(r.converged === false, 'verify-still: old open items must block convergence')
+        assert(r.handoff.includes('【复检结论】'), 'verify-still: handoff should carry the verify section')
+      }
+      if (CASE === 'verify-fallback') {
+        assert(r.mode === 'explore', 'verify-fallback: should downgrade to explore')
+        assert(r.verifyFallback === true, 'verify-fallback: flag should be true')
       }
       if (CASE === 'forced-dim') {
         assert(

@@ -2,11 +2,11 @@
 
 通用**挑刺流水线**：给一轮代码改动做多视角"找茬"，产出结构化清单，**只挑刺、不修代码**。
 
-一个插件打包三档流水线 + 七个只读角色 + 三个 workflow。装一次，任何仓库都能用：
+一个插件打包三档流水线 + 九个只读角色 + 三个 workflow。装一次，任何仓库都能用：
 
 - **代码档**（`critic-round`）：审一轮代码改动，管正确性、兼容、性能、交互体验；
 - **画面档**（`quality-round`）：审画面表现，拿调用方点名的参考作品当基准，做多轮迭代式挑刺；
-- **设计档**（`design-round`）：审游戏设计，按数值平衡、经济成长、趣味性结构代理、合作性/合作趣味、突发意外趣味、玩家反馈的心理机制分维挑刺，只认结构证据。
+- **设计档**（`design-round`）：审游戏设计，先只读分诊判任务类型与评分维度（11 维可选），再做多轮迭代挑刺，只认结构证据；复检轮只重打涉改维与旧账所在维。
 
 ## 它解决什么
 
@@ -101,53 +101,83 @@
 
 ## 设计档（design-round）
 
-给一套**游戏设计**做迭代式挑刺：数值平衡、经济与成长曲线、趣味性、多人协作、意外乐趣、玩家反馈。核心难点是**趣味性主观**——AI 不能真玩一局说"不爽"，所以本档只查**结构代理指标**，且**玩家原话永远不能当证据**。
+给一套**游戏设计**做迭代式挑刺。核心难点是**趣味性主观**——AI 不能真玩一局说"不爽"，所以本档只查**结构代理指标**，且**玩家原话永远不能当证据**。
 
-**七个设计维度**（每维一个 `minPlayers` 闸）：
+**先分诊，再挑刺**：`goal` 往往是大方向（「地图要有视觉诱饵」「Boss 机制要多样」「双人要有差分」），固定几维装不下就会静默吞掉。所以每轮先由一个只读分诊员读 `goal` + 项目现状，判出**任务类型**与**评分维度**：
+
+| 类型 | 起手维度 |
+|---|---|
+| `balance-tuning` 数值平衡 | 数值平衡 + 经济与成长曲线 |
+| `level-content` 地图与内容 | 地图与关卡结构 + 收集与分支结构 |
+| `boss-encounter` Boss 战 | Boss 与敌人机制多样性（提数值可加数值平衡） |
+| `coop-experience` 双人体验 | 合作性 + 合作趣味 + 双人差分与对等（强制 players ≥ 2） |
+| `full-mixed` 复合需求 | 全部 11 维 |
+
+分诊还会把 `goal` 拆成条目**逐条指定归属维度**。归不进去的单列 `uncoveredGoals`、给出建议（补证据 / 显式加维 / 人工拍板），并**拦住收敛**（停因 `goal-uncovered`）——绝不静默丢弃。调用方显式传 `type` 或 `dimensions` 时跳过分诊（显式优先），跨轮把它回传即可避免每轮重诊导致维度漂移。
+
+**十一个设计维度**（每维一个 `minPlayers` 闸）：
 
 | 维度 | 查什么 | 人数闸 |
 |---|---|---|
 | 数值平衡 | 难度曲线、TTK/TTD、数值断崖与正反馈循环 | 1 |
 | 经济与成长曲线 | 产出/消耗速率、通胀、成长斜率与瓶颈 | 1 |
+| 地图与关卡结构 | 路径连通、视线遮挡与盲区、单屏同框信息量、地标可见性、通用交互规则数、探索回报密度 | 1 |
+| 收集与分支结构 | 必得 vs 可选、分支路径数、错过可补性、重复战斗率、解锁依赖 | 1 |
+| Boss 与敌人机制多样性 | pattern 复用率、弹幕形状数、阶段数、预警与弱点、机制类型分布、秒杀窗口 | 1 |
 | 趣味性结构代理 | 反馈密度、选择空间、风险回报结构、失败代价与重试成本 | 1 |
 | 合作性 | 分工必要性、互补收益、搭便车与拖累 | 2 |
 | 合作趣味 | 协作中的沟通需求、共同目标张力、失误的社交后果 | 2 |
+| 双人差分与对等 | 动词分配、信息不对称、主动权轮换、嫉妒与搭便车、换位二周目 | 2 |
 | 突发意外趣味 | 随机事件的结构位置、可回溯性、雪球失控 | 2 |
 | 玩家反馈的心理机制 | 反馈文本 → 心理学机制 → 结构锚点 | 有 `feedback` 才开 |
+
+维度边界写在各自的 prompt 里（「这个不归我，交给谁」），跨维重叠由判卷合并时保留更具体的那条。项目**根本没有**某个设计面时，维度可标 `not-applicable`：不计分、不阻塞收敛，单列返回并写明理由。
+
+**逐轮模式**：`history` 为空 → `explore`（全量挖）；否则 → `verify`（复检）。复检由一个只读核对员把上轮必修项逐条判 `fixed` / `still-present` / `worsened` / `untestable`，同时把本轮改动（`changes`）映射到受影响维度，只对**涉改维与旧账所在维**重打分并跑定向回归镜头，其余维度沿用上轮分数（标 `carried`）。旧账没清完就不算收敛。
 
 **玩家反馈怎么处理**：每条反馈必须映射到心理学机制（自主 / 胜任 / 归属 / 心流 / 损失厌恶 / 变比率奖励 / 沉没成本 / 峰终 / 其他），再落到具体数值:行、模拟输出或代码位置。落不了锚的进 `unverifiedFeedback` 单列，**不计分、不阻塞收敛**。纯情绪直接不入账。
 
 一次调用 = 一轮：
 
 ```
-① 基准调研（可选）  无基准 brief 且给了 benchmarkRefs 时先跑：把参考作品转成七维可核验口径
-② 取证             执行 simPlan（模拟命令 / 校验命令）
-③ 找茬             按组并行镜头（depth=full 拆逐维）挑刺并自评扣分
+① 分诊（可跳过）    只读勘察判任务类型 + 评分维度 + 目标逐条归位 + 不适用维度
+② 基准调研（可选）  无基准 brief 且给了 benchmarkRefs 时先跑：把参考作品转成可核验口径
+③ 取证             执行 simPlan（模拟命令 / 校验命令）
+③b 复检（verify）   核对员逐条判上轮必修项 + 把改动映射到受影响维度
+④ 找茬             按组并行镜头（depth=full 拆逐维；verify 只跑涉改维）挑刺并自评扣分
                     玩家反馈维单独走心理机制解析；细节评委同批并行：审假达标 + 证据造假 + 阈值漂移
-④ 分片+汇流        每镜头一个分片判卷（引用式，可改判 anchorKind），再轻量汇流跨片去重；证据造假阻断由脚本按细节评委违规执行
-⑤ 收敛             脚本按双闸门判定收敛 / 停滞 / 硬停
+⑤ 分片+汇流        每镜头一个分片判卷（引用式，可改判 anchorKind），再轻量汇流跨片去重；证据造假阻断由脚本按细节评委违规执行
+⑥ 收敛             脚本按双闸门判定收敛 / 停滞 / 硬停
 ```
+
+**体量闸门**：每维 findings ≤ 8、每片 items ≤ 24、汇流 digest ≤ 80 条、取证结果序列化 ≤ 60K 字符（超出按严重度截断并标丢弃数）——单次输入/输出撞上游长度上限会让判卷整体报废，闸门是硬约束。
 
 **评分沿用扣分表**：每维满分 5，从 5 往下扣；每笔扣分必须写清「差什么 / 差距多大 / 证据在哪」，且 `anchorKind` 只能是 `numeric-config` / `sim-output` / `code` / `benchmark`——枚举里物理上没有 `feedback`，玩家原话冒充结构证据会被细节评委拦下。
 
-**收敛**：全部活跃维达标（默认 4）+ 无必修项 + 无证据造假阻断。止路还有达 `maxRounds`（默认 4）、停滞、取证不足。
+**收敛**：全部活跃维达标（默认 4）+ 无必修项 + 旧账无未修项 + 无证据造假阻断 + 目标全部有维度接住。停因优先级：`已收敛` → `目标未覆盖` → `基准换版` → `证据造假阻断` → `达轮数上限` → `停滞` → `取证不足`。
 
 **参数**：
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `goal` | 是 | 本轮想改善什么 |
+| `goal` | 是 | 本轮想改善什么（可以很宽，分诊会拆条归位） |
 | `simPlan` | 建议 | `{run, workdir, outputDir, checks[{name,command}], codePaths}` |
 | `feedback` | 否 | 玩家反馈文本，`string` 或 `{text, files[]}`；给了才开反馈维 |
 | `benchmarkRefs` | 否 | 参考作品名，由调用方点名 |
-| `players` | 否 | 人数，默认 1；2 人以上开合作/意外三维 |
-| `dimensions` | 否 | 维度白名单，可强制开启被人数闸关掉的维 |
+| `players` | 否 | 人数，默认 1；2 人以上开合作/差分/意外四维 |
+| `type` | 否 | 显式任务类型，给了就跳过分诊 |
+| `dimensions` | 否 | 维度白名单，可强制开启被人数闸关掉的维；给了就跳过分诊 |
+| `scope` | 否 | 本轮聚焦切片 `{label, units[], note?}`：全局维仍做基线，只在切片内深挖 |
+| `mode` | 否 | `explore` / `verify`；缺省按 `history` 自动 |
+| `changes` | 否 | 本轮改动 `{summary, stat, files[], dimensions[]}`，复检与回归镜头据此定位 |
+| `prevMustFix` | 否 | 显式覆盖旧账明细（优先于 `history` 里的记录） |
+| `acceptUncovered` | 否 | `true` 时放行「目标没有维度接住」的拦截 |
 | `projectPath` | 否 | 项目根路径，用于定位；本身不算证据 |
-| `round` / `history` / `benchmarkBrief` / `projectRef` / `known` / `targetScores` / `maxRounds` / `depth` / `projectContext` | 否 | 同画面档；本档基准文件为 `.critic/benchmark-design.json` |
+| `round` / `history` / `benchmarkBrief` / `projectRef` / `known` / `targetScores` / `maxRounds` / `depth` / `projectContext` | 否 | 同画面档；本档基准文件为 `.critic/benchmark-design.json`；`depth` 缺省 explore=full、verify=quick |
 
 四类证据（`simPlan.run` / `simPlan.checks` / `simPlan.codePaths` / `feedback` / `benchmarkRefs`）至少给一个，否则直接早退。
 
-**返回**：`dimensions`（分数/目标/扣分项/优点/是否假达标/是否豁免）、`mustFix`/`shouldFix`/`minor`、`evidenceIntegrity`（造假硬阻断）、`unverifiedFeedback`（落不了锚的反馈）、`coverage`、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`、`benchmarkBrief`、`briefStatus`/`briefPath`/`briefRevision`（固化规则同画面档）、`handoff`（未达标维附参考做法与出处，规则同画面档）。
+**返回**：`type` / `triage` / `triageFallback`、`goalCoverage` / `uncoveredGoals` / `acceptedUncovered`、`mode` / `verifyFallback` / `verifier` / `touchedDims` / `carriedDims`、`scope`、`notApplicable`、`dimensions`（分数/目标/扣分项/优点/是否假达标/是否沿用上轮/是否不适用）、`mustFix`/`shouldFix`/`minor`、`evidenceIntegrity`（造假硬阻断）、`unverifiedFeedback`、`coverage`、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`、`benchmarkBrief`、`briefStatus`/`briefPath`/`briefRevision`、`handoff`（未达标维附参考做法与出处；另附未覆盖目标与复检结论）。
 
 ## 安装
 
@@ -226,7 +256,7 @@ claude plugin install critic-pipeline@haha-connectors
 
 ## 硬约束
 
-- **只挑刺，不修代码**。所有角色都不用 `tools` 白名单，而是用 `disallowedTools` 禁掉全部写工具与子代理派发工具，物理上改不了代码；视觉挑刺者额外保留读图与执行取证命令的能力，设计档分析师额外保留执行模拟命令的能力。
+- **只挑刺，不修代码**。所有角色都不用 `tools` 白名单，而是用 `disallowedTools` 禁掉全部写工具与子代理派发工具，物理上改不了代码；视觉挑刺者与设计分析师额外保留执行取证命令的能力；设计核对员保留 Bash 用于重跑上轮模拟复测。
 - **不许用 `tools` 白名单**。本机构建下，agent 一旦声明 `tools`，引擎注入的 `StructuredOutput` 会被过滤掉，带 schema 的子代理必然交不出结果。
 - **每轮全新视角**。每轮都是一次性子代理，无记忆，天然"换人挑刺"。
 - **判卷不自审**。分片判卷与汇流都不新增 findings（分片 schema 物理上没有新增字段），汇流发现的疑点只走升级门，交给下一轮独立找茬核实。
@@ -244,7 +274,9 @@ critic-pipeline/
 │   ├── critic-judge.md                # 代码/画面档分片判卷与汇流判卷共用角色（只读 + 强档）
 │   ├── critic-vision-reader.md        # 画面档：基准调研 / 取证 / 逐维找茬
 │   ├── critic-detail-judge.md         # 画面档：细节评委（假达标 + 抄袭）
+│   ├── critic-design-triager.md       # 设计档：分诊（类型 + 评分维度 + 目标归位）
 │   ├── critic-design-analyst.md       # 设计档：基准调研 / 取证 / 逐维找茬 / 反馈心理机制解析
+│   ├── critic-design-verifier.md      # 设计档：复检核对（旧账四态 + 改动映射）
 │   ├── critic-design-detail-judge.md  # 设计档：细节评委（假达标 + 证据造假 + 阈值漂移）
 │   └── critic-design-judge.md         # 设计档：分片判卷 / 汇流判卷
 ├── skills/
@@ -261,13 +293,13 @@ critic-pipeline/
     └── design-round.js           # 设计档流水线
 ```
 
-`CONTEXT.md` 是领域术语表（档位、画面八维、设计七维、基准与评分、借鉴与抄袭、角色口径）。
+`CONTEXT.md` 是领域术语表（档位、画面八维、设计十一维、分诊与复检、基准与评分、借鉴与抄袭、角色口径）。
 
 ## 相关
 
 - 零成本干跑（不调真实子代理，只验参数流动、分片判卷合并与收敛判定）：
   - `node scripts/dryrun-critic-round.cjs <case>`：normal / cleanup / explicit-lenses / nodiff / escalate / dropall
   - `node scripts/dryrun-quality-round.cjs <case>`：normal / plagiarism / converged / stalled / noref / nocapture / researchfail / lensfail / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
-  - `node scripts/dryrun-design-round.cjs <case>`：normal / researchfail / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
+  - `node scripts/dryrun-design-round.cjs <case>`（28 个）：normal / researchfail / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified / triage-map / triage-fallback / goal-uncovered / accept-uncovered / scope / not-applicable / cap-findings / verify-fixed / verify-still / verify-fallback / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
 - ADR：`D:\app\YuMoBox\docs\adr\0055-critic-pipeline-workflow.md`
 - 团队台本：`D:\app\YuMoBox\.claude\team-kits\standard-kit.json`（干活用团队，挑刺用本插件，两者解耦）
