@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "critic-evidence": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/evidence-server.mjs"]
+    }
+  }
+}

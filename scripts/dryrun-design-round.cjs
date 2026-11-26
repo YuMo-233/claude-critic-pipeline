@@ -25,13 +25,8 @@ const DIM_KEYS = [
   'feedback-psych',
 ]
 
-const simPlan = {
-  run: 'node sim/ttk.mjs',
-  workdir: '.',
-  outputDir: 'mock/out',
-  checks: [{ name: 'ttk', command: 'node sim/ttk.mjs' }],
-  codePaths: ['data/boss.csv'],
-}
+// 证据包由调度员在 workflow 外准备，workflow 只收目录
+const evidenceDir = 'mock/.critic/evidence/mock'
 
 // 构造一份「已落盘」的基准文件内容（含元数据），供复用/过期用例
 function storedBrief(over) {
@@ -58,7 +53,7 @@ const argsByCase = {
   normal: {
     goal: '让第三章难度更平滑',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '第3章太难了，我打不过', files: ['feedback/r1.txt'] },
     benchmarkRefs: ['MockRefA'],
     players: 4,
@@ -68,7 +63,7 @@ const argsByCase = {
   researchfail: {
     goal: '基准调研失败的降级验证',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     benchmarkRefs: ['MockRefA'],
     round: 1,
@@ -77,21 +72,21 @@ const argsByCase = {
   'solo-nofeedback': {
     goal: '单人模式下数值更平滑',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     round: 1,
   },
   'forced-dim': {
     goal: '单机也要有意外惊喜',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     dimensions: ['surprise-fun'],
     round: 1,
   },
   nogoal: {
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
   },
   noevidence: {
@@ -101,21 +96,21 @@ const argsByCase = {
   simfail: {
     goal: '看战斗数值',
     projectPath: 'mock/project',
-    simPlan: { ...simPlan, run: 'node sim/broken.mjs' },
+    evidenceDir,
     players: 1,
     round: 1,
   },
   thresholddrift: {
     goal: '让趣味结构更扎实',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     round: 1,
   },
   evidenceblocked: {
     goal: '核对数值结论',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '怪太肉了' },
     players: 1,
     round: 1,
@@ -123,7 +118,7 @@ const argsByCase = {
   converged: {
     goal: '数值与趣味都达标',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '现在打着舒服' },
     players: 4,
     round: 2,
@@ -141,7 +136,7 @@ const argsByCase = {
   stalled: {
     goal: '再挑一轮',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '还是有点难' },
     players: 4,
     round: 3,
@@ -167,7 +162,7 @@ const argsByCase = {
   'psych-unverified': {
     goal: '看看玩家为什么抱怨',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '玩着没意思\n就是不好玩' },
     players: 1,
     round: 1,
@@ -176,7 +171,7 @@ const argsByCase = {
   'triage-map': {
     goal: '把地图做成视野盲区沙盒，箱庭谜题双人强制合作',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     round: 1,
     depth: 'quick',
@@ -184,7 +179,7 @@ const argsByCase = {
   'triage-fallback': {
     goal: '随便优化一下',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     round: 1,
     depth: 'quick',
@@ -192,7 +187,7 @@ const argsByCase = {
   'goal-uncovered': {
     goal: '让打击手感更爽，界面更顺手',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     round: 1,
     depth: 'quick',
@@ -200,7 +195,7 @@ const argsByCase = {
   'accept-uncovered': {
     goal: '让打击手感更爽，界面更顺手',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     round: 1,
     depth: 'quick',
@@ -209,7 +204,7 @@ const argsByCase = {
   scope: {
     goal: '只看第三章的地图结构',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     round: 1,
     depth: 'quick',
@@ -219,7 +214,7 @@ const argsByCase = {
   'not-applicable': {
     goal: '看看 Boss 机制多样性',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     round: 1,
     depth: 'quick',
@@ -227,7 +222,7 @@ const argsByCase = {
   'cap-findings': {
     goal: '看战斗数值',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     round: 1,
     depth: 'quick',
@@ -237,7 +232,7 @@ const argsByCase = {
   'verify-fixed': {
     goal: '复检上一轮的必修项',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 4,
     round: 2,
     mode: 'verify',
@@ -271,7 +266,7 @@ const argsByCase = {
   'verify-still': {
     goal: '复检上一轮的必修项',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 4,
     round: 2,
     mode: 'verify',
@@ -305,7 +300,7 @@ const argsByCase = {
   'verify-fallback': {
     goal: '想复检但没给旧账',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     players: 1,
     round: 2,
     mode: 'verify',
@@ -315,7 +310,7 @@ const argsByCase = {
   fresh: {
     goal: '让第三章难度更平滑',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '第3章太难了' },
     benchmarkRefs: ['MockRefA'],
     players: 4,
@@ -326,7 +321,7 @@ const argsByCase = {
   reuse: {
     goal: '让第三章难度更平滑',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '第3章太难了' },
     benchmarkRefs: ['MockRefA'],
     players: 4,
@@ -348,7 +343,7 @@ const argsByCase = {
   'stale-refs': {
     goal: '让第三章难度更平滑',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '第3章太难了' },
     benchmarkRefs: ['MockRefA'],
     players: 4,
@@ -358,7 +353,7 @@ const argsByCase = {
   'stale-version': {
     goal: '让第三章难度更平滑',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '第3章太难了' },
     benchmarkRefs: ['MockRefA'],
     players: 4,
@@ -369,7 +364,7 @@ const argsByCase = {
   fallback: {
     goal: '让第三章难度更平滑',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '第3章太难了' },
     benchmarkRefs: ['MockRefA'],
     players: 4,
@@ -379,7 +374,7 @@ const argsByCase = {
   partial: {
     goal: '让第三章难度更平滑',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '第3章太难了' },
     benchmarkRefs: ['MockRefA'],
     players: 4,
@@ -400,7 +395,7 @@ const argsByCase = {
   briefrevised: {
     goal: '让第三章难度更平滑',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '第3章太难了' },
     benchmarkRefs: ['MockRefA'],
     players: 4,
@@ -422,7 +417,7 @@ const argsByCase = {
   oldhistory: {
     goal: '让第三章难度更平滑',
     projectPath: 'mock/project',
-    simPlan,
+    evidenceDir,
     feedback: { text: '第3章太难了' },
     benchmarkRefs: ['MockRefA'],
     players: 4,
@@ -460,32 +455,6 @@ function mockBrief() {
     })),
     sources: [],
     caveats: 'mock brief',
-  }
-}
-
-function mockEvidence() {
-  const fail = CASE === 'simfail'
-  return {
-    executed: true,
-    commands: [
-      {
-        command: fail ? 'node sim/broken.mjs' : 'node sim/ttk.mjs',
-        exitCode: fail ? 1 : 0,
-        output: fail ? 'Error: Cannot find module sim/broken.mjs' : 'ttk mean 12.4s',
-      },
-    ],
-    metrics: fail ? [] : [{ name: 'ttk', command: 'node sim/ttk.mjs', output: 'ttk mean 12.4s' }],
-    numericAnchors: fail
-      ? []
-      : [
-          {
-            name: '第3章敌人HP',
-            path: 'data/boss.csv:3',
-            observation: '2400',
-            deviation: '+50% vs 玩家DPS涨幅',
-          },
-        ],
-    notes: fail ? '模拟命令失败，未取得数值' : 'mock 取证完成',
   }
 }
 
@@ -770,7 +739,6 @@ async function agent(prompt, opts = {}) {
   if (label.startsWith('分诊')) return mockTriage()
   if (label.startsWith('复检')) return mockVerify(prompt)
   if (label.includes('调研')) return CASE === 'researchfail' ? null : mockBrief()
-  if (label.includes('取证')) return mockEvidence()
   if (label.includes('心理机制')) return mockPsych()
   if (label.includes('找茬')) return mockLensFindings(label, prompt)
   if (label.includes('评审')) return mockDetail()
@@ -819,11 +787,16 @@ __run()
 
     const lensCalls = agentCalls.filter((c) => c.label.startsWith('找茬:'))
     const detailCalls = agentCalls.filter((c) => c.label.includes('评审'))
+    assert(!agentCalls.some((c) => c.label.includes('取证')), 'evidence agent must not run inside workflow')
+    assert(
+      lensCalls.every((c) => c.prompt.includes('get_evidence_slice') && c.prompt.includes(${JSON.stringify(evidenceDir)})),
+      'lens prompt should carry evidenceDir + get_evidence_slice pointer'
+    )
 
     if (CASE === 'nogoal') {
       assert(r.error === 'missing args.goal', 'expected missing args.goal, got ' + r.error)
     } else if (CASE === 'noevidence') {
-      assert(String(r.error || '').startsWith('missing evidence'), 'expected missing evidence, got ' + r.error)
+      assert(r.error === 'missing args.evidenceDir', 'expected missing args.evidenceDir, got ' + r.error)
     } else if (CASE === 'researchfail') {
       assert(!/参考做法（/.test(r.handoff), 'researchfail: must not paste placeholder as advice')
       assert(r.handoff.includes('本轮无有效基准 brief'), 'researchfail: should state no valid brief')
@@ -995,7 +968,7 @@ __run()
         assert(lensCalls.length === 1, 'forced: 1 lens expected, got ' + lensCalls.length)
       }
       if (CASE === 'simfail') {
-        assert(r.evidence.commands[0].exitCode === 1, 'simfail: exitCode should be 1')
+        assert(r.evidence.dir === ${JSON.stringify(evidenceDir)}, 'simfail: evidence should only carry dir')
         assert(r.evidenceIntegrity.blocked === false, 'simfail: must not be blocked')
         assert(r.stopReason !== 'evidence-blocked', 'simfail: stopReason must not be evidence-blocked')
         const noEv = r.dimensions.filter((d) => d.status === 'no-evidence')

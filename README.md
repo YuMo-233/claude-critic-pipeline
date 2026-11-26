@@ -137,12 +137,13 @@
 
 **玩家反馈怎么处理**：每条反馈必须映射到心理学机制（自主 / 胜任 / 归属 / 心流 / 损失厌恶 / 变比率奖励 / 沉没成本 / 峰终 / 其他），再落到具体数值:行、模拟输出或代码位置。落不了锚的进 `unverifiedFeedback` 单列，**不计分、不阻塞收敛**。纯情绪直接不入账。
 
+**取证在 workflow 外**：调度员先用插件自带的 `critic-evidence` MCP server 调 `prepare_evidence`，把模拟输出、校验命令与配置拍到 `.critic/evidence/<label>/`；workflow 只收 `evidenceDir`，各角色用 `get_evidence_slice` 按关键词取切片、用 `verify_anchors` 机械核锚点。证据不再内联进 prompt——这是本档的主要 token 省法。
+
 一次调用 = 一轮：
 
 ```
 ① 分诊（可跳过）    只读勘察判任务类型 + 评分维度 + 目标逐条归位 + 不适用维度
 ② 基准调研（可选）  无基准 brief 且给了 benchmarkRefs 时先跑：把参考作品转成可核验口径
-③ 取证             执行 simPlan（模拟命令 / 校验命令）
 ③b 复检（verify）   核对员逐条判上轮必修项 + 把改动映射到受影响维度
 ④ 找茬             按组并行镜头（depth=full 拆逐维；verify 只跑涉改维）挑刺并自评扣分
                     玩家反馈维单独走心理机制解析；细节评委同批并行：审假达标 + 证据造假 + 阈值漂移
@@ -150,7 +151,7 @@
 ⑥ 收敛             脚本按双闸门判定收敛 / 停滞 / 硬停
 ```
 
-**体量闸门**：每维 findings ≤ 8、每片 items ≤ 24、汇流 digest ≤ 80 条、取证结果序列化 ≤ 60K 字符（超出按严重度截断并标丢弃数）——单次输入/输出撞上游长度上限会让判卷整体报废，闸门是硬约束。
+**体量闸门**：每维 findings ≤ 8、每片 items ≤ 24、汇流 digest ≤ 80 条（超出按严重度截断并标丢弃数）——单次输入/输出撞上游长度上限会让判卷整体报废，闸门是硬约束。
 
 **评分沿用扣分表**：每维满分 5，从 5 往下扣；每笔扣分必须写清「差什么 / 差距多大 / 证据在哪」，且 `anchorKind` 只能是 `numeric-config` / `sim-output` / `code` / `benchmark`——枚举里物理上没有 `feedback`，玩家原话冒充结构证据会被细节评委拦下。
 
@@ -161,7 +162,7 @@
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `goal` | 是 | 本轮想改善什么（可以很宽，分诊会拆条归位） |
-| `simPlan` | 建议 | `{run, workdir, outputDir, checks[{name,command}], codePaths}` |
+| `evidenceDir` | 是 | `prepare_evidence` 产出的证据包目录；不传直接早退 |
 | `feedback` | 否 | 玩家反馈文本，`string` 或 `{text, files[]}`；给了才开反馈维 |
 | `benchmarkRefs` | 否 | 参考作品名，由调用方点名 |
 | `players` | 否 | 人数，默认 1；2 人以上开合作/差分/意外四维 |
@@ -175,7 +176,7 @@
 | `projectPath` | 否 | 项目根路径，用于定位；本身不算证据 |
 | `round` / `history` / `benchmarkBrief` / `projectRef` / `known` / `targetScores` / `maxRounds` / `depth` / `projectContext` | 否 | 同画面档；本档基准文件为 `.critic/benchmark-design.json`；`depth` 缺省 explore=full、verify=quick |
 
-四类证据（`simPlan.run` / `simPlan.checks` / `simPlan.codePaths` / `feedback` / `benchmarkRefs`）至少给一个，否则直接早退。
+证据来源（`prepare_evidence` 的 `run` / `checks` / `codePaths`，外加 `feedback` / `benchmarkRefs`）至少给一类；`evidenceDir` 本身永远必填——取证在 workflow 外做完才开跑，缺了就明确报错，不静默降级。
 
 **返回**：`type` / `triage` / `triageFallback`、`goalCoverage` / `uncoveredGoals` / `acceptedUncovered`、`mode` / `verifyFallback` / `verifier` / `touchedDims` / `carriedDims`、`scope`、`notApplicable`、`dimensions`（分数/目标/扣分项/优点/是否假达标/是否沿用上轮/是否不适用）、`mustFix`/`shouldFix`/`minor`、`evidenceIntegrity`（造假硬阻断）、`unverifiedFeedback`、`coverage`、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`、`benchmarkBrief`、`briefStatus`/`briefPath`/`briefRevision`、`handoff`（未达标维附参考做法与出处；另附未覆盖目标与复检结论）。
 
@@ -256,7 +257,7 @@ claude plugin install critic-pipeline@haha-connectors
 
 ## 硬约束
 
-- **只挑刺，不修代码**。所有角色都不用 `tools` 白名单，而是用 `disallowedTools` 禁掉全部写工具与子代理派发工具，物理上改不了代码；视觉挑刺者与设计分析师额外保留执行取证命令的能力；设计核对员保留 Bash 用于重跑上轮模拟复测。
+- **只挑刺，不修代码**。所有角色都不用 `tools` 白名单，而是用 `disallowedTools` 禁掉全部写工具、子代理派发工具与自由 shell，物理上改不了代码。设计档的取数口子只剩插件自带的 `critic-evidence`：`get_evidence_slice`（取证据切片）、`code_query`（grep/read/list）、`verify_anchors`（批量核锚点），复检额外保留 `run_task`（只跑调用方给过的命令）。`prepare_evidence` 只属于调度员，agent 一律禁用——否则等于给了任意命令执行。`serena` 必禁：`serena_repl` 是能读能写还能跑 shell 的万能口子，`disallowedTools` 拦不住它内部的工具。
 - **不许用 `tools` 白名单**。本机构建下，agent 一旦声明 `tools`，引擎注入的 `StructuredOutput` 会被过滤掉，带 schema 的子代理必然交不出结果。
 - **每轮全新视角**。每轮都是一次性子代理，无记忆，天然"换人挑刺"。
 - **判卷不自审**。分片判卷与汇流都不新增 findings（分片 schema 物理上没有新增字段），汇流发现的疑点只走升级门，交给下一轮独立找茬核实。
@@ -267,15 +268,19 @@ claude plugin install critic-pipeline@haha-connectors
 ```
 critic-pipeline/
 ├── plugin.json              # 插件 manifest
+├── .mcp.json                # 插件自带 MCP server 注册（critic-evidence）
 ├── .claude-plugin/
 │   └── plugin.json          # 插件 manifest（打包版）
+├── mcp/
+│   └── evidence-server.mjs   # 零依赖 stdio MCP：prepare_evidence / get_evidence_slice / code_query / verify_anchors / run_task
 ├── agents/
 │   ├── critic-reader.md               # 代码档找茬角色（只读 + 快档）
 │   ├── critic-judge.md                # 代码/画面档分片判卷与汇流判卷共用角色（只读 + 强档）
 │   ├── critic-vision-reader.md        # 画面档：基准调研 / 取证 / 逐维找茬
 │   ├── critic-detail-judge.md         # 画面档：细节评委（假达标 + 抄袭）
 │   ├── critic-design-triager.md       # 设计档：分诊（类型 + 评分维度 + 目标归位）
-│   ├── critic-design-analyst.md       # 设计档：基准调研 / 取证 / 逐维找茬 / 反馈心理机制解析
+│   ├── critic-design-researcher.md    # 设计档：基准调研（只查公开资料）
+│   ├── critic-design-analyst.md       # 设计档：逐维找茬 / 反馈心理机制解析
 │   ├── critic-design-verifier.md      # 设计档：复检核对（旧账四态 + 改动映射）
 │   ├── critic-design-detail-judge.md  # 设计档：细节评委（假达标 + 证据造假 + 阈值漂移）
 │   └── critic-design-judge.md         # 设计档：分片判卷 / 汇流判卷
@@ -286,7 +291,8 @@ critic-pipeline/
 ├── scripts/
 │   ├── dryrun-quality-round.cjs  # 画面档零成本干跑
 │   ├── dryrun-design-round.cjs   # 设计档零成本干跑
-│   └── dryrun-critic-round.cjs   # 代码档零成本干跑
+│   ├── dryrun-critic-round.cjs   # 代码档零成本干跑
+│   └── selftest-mcp.mjs          # critic-evidence 五工具自测
 └── workflows/
     ├── critic-round.js           # 代码档流水线
     ├── quality-round.js          # 画面档流水线
@@ -300,6 +306,7 @@ critic-pipeline/
 - 零成本干跑（不调真实子代理，只验参数流动、分片判卷合并与收敛判定）：
   - `node scripts/dryrun-critic-round.cjs <case>`：normal / cleanup / explicit-lenses / nodiff / escalate / dropall
   - `node scripts/dryrun-quality-round.cjs <case>`：normal / plagiarism / converged / stalled / noref / nocapture / researchfail / lensfail / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
-  - `node scripts/dryrun-design-round.cjs <case>`（28 个）：normal / researchfail / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified / triage-map / triage-fallback / goal-uncovered / accept-uncovered / scope / not-applicable / cap-findings / verify-fixed / verify-still / verify-fallback / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
+  - `node scripts/dryrun-design-round.cjs <case>`（30 个）：normal / researchfail / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified / triage-map / triage-fallback / goal-uncovered / accept-uncovered / scope / not-applicable / cap-findings / verify-fixed / verify-still / verify-fallback / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
+- `node scripts/selftest-mcp.mjs`：critic-evidence 五工具自测（造临时玩具项目，起 stdio server 全链路跑一遍）
 - ADR：`D:\app\YuMoBox\docs\adr\0055-critic-pipeline-workflow.md`
 - 团队台本：`D:\app\YuMoBox\.claude\team-kits\standard-kit.json`（干活用团队，挑刺用本插件，两者解耦）

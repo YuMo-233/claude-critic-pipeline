@@ -5,19 +5,27 @@ description: 跑一轮游戏设计挑刺。先由只读分诊员判任务类型�
 
 # 跑一轮游戏设计挑刺
 
-## 1. 先补齐事实底座
+> 前置：插件自带的 `critic-evidence` MCP server 必须已注册（工具名前缀 `mcp__plugin_critic-pipeline_critic-evidence__`）。新装/升级插件后要重启会话，MCP 工具才会出现。
 
-必填 `goal`（这轮想改善什么）。另需**至少一类证据来源**，四类随便组合，一个都没有就先问用户：
+## 1. 先备证据包（workflow 外做）
+
+必填 `goal`（这轮想改善什么）。另需**至少一类证据来源**：
 
 | 字段 | 作用 |
 |---|---|
-| `simPlan.run` | 模拟/统计命令（战斗耗时、数值曲线等），在 `workdir` 下执行 |
-| `simPlan.checks` | 现成校验命令，形如 `[{name, command}]` |
-| `simPlan.codePaths` | 值得查的数值与规则配置（角色表、掉落表、成长曲线、经济参数），给路径即可 |
+| `run` | 模拟/统计命令（战斗耗时、数值曲线等），在项目根执行 |
+| `checks` | 现成校验命令，形如 `[{name, command}]` |
+| `codePaths` | 值得查的数值与规则配置（角色表、掉落表、成长曲线、经济参数），给路径即可 |
 | `feedback` | 玩家反馈文本（字符串或 `{text, files[]}`）。**可选** |
 | `benchmarkRefs` | 参考作品名，用户点名才用；插件不写死任何游戏名 |
 
-`projectPath` 只用来定位项目，本身不算证据。
+**取证在 workflow 之前完成**：开跑前先调 `critic-evidence` 的
+`prepare_evidence({ projectPath, label, run, checks, codePaths, notes })`，
+它把命令输出与文件内容拍平成证据包，落在 `<projectPath>/.critic/evidence/<label>/`（`index.json` + `entries.jsonl` + `raw/`），只返回索引表与 `evidenceDir`。
+
+- 拿到 `evidenceDir` 后原样传给 workflow 的 `args.evidenceDir`；**不传就明确报缺失、不静默降级**。
+- 证据包里没有的东西，让镜头写进 `coverageGaps`，下一轮补命令或补 `codePaths` 再重新 `prepare_evidence`。
+- `projectPath` 同时用于定位项目与证据包，本身不算证据。
 
 可选：
 
@@ -34,11 +42,12 @@ description: 跑一轮游戏设计挑刺。先由只读分诊员判任务类型�
 
 ## 2. 调用 workflow
 
-**先试名字，报错就走内联**：
+**先试名字，报错就走 scriptPath**：
 
 1. 调 `Workflow({ name: 'critic-pipeline:design-round', args: {...} })`；
-2. 若报 `Unknown workflow`（本机 Haha 构建即如此），用 Glob 找到插件目录下最新的 `workflows/design-round.js`（形如 `~/.claude/plugins/cache/*/critic-pipeline/*/workflows/design-round.js`），把文件**全文**作为 `script` 传给 Workflow 工具，`args` 照旧传。
+2. 若报 `Unknown workflow`（本机 Haha 构建即如此），用 Glob 找到插件目录下最新的 `workflows/design-round.js`（形如 `~/.claude/plugins/cache/*/critic-pipeline/*/workflows/design-round.js`），调 `Workflow({ scriptPath: <该文件>, args })`。**不要读全文再当 `script` 内联**——脚本 90KB+，内联一次就永久占主会话历史。
 3. `args` 传对象或 JSON 字符串都行——脚本顶部会归一解析，不用预处理。
+4. workflow 是异步启动：结果在 **task-notification**（含完整 `result`）里回来，不需要读 journal、也不需要轮询 TaskOutput。
 
 一次调用只跑一轮。两条硬口径先说清：
 
@@ -74,7 +83,7 @@ description: 跑一轮游戏设计挑刺。先由只读分诊员判任务类型�
 
 ### 4.1 基准落盘（读写由你负责，脚本不碰磁盘）
 
-- **一次性准备**：确认项目 `.gitignore` 里有 `.critic/`，没有就追加一行（基准笔记是本机调研产物，不入库）。
+- **一次性准备**：确认项目 `.gitignore` 里有 `.critic/`，没有就追加一行（基准笔记与证据包都是本机产物，不入库）。
 - **每轮开跑前**：读 `.critic/benchmark-design.json`，内容作为 `args.benchmarkBrief` 传入；同时从 git 取当前版本/commit 作为 `args.projectRef`（取不到就跳过，不要硬编）。文件不存在或读失败就当没有，照常开跑（脚本会自动调研）。
 - **每轮收结果后**看 `briefStatus`：
   - `reused`：复用了文件里的基准，**不动文件**；

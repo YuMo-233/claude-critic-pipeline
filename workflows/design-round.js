@@ -12,7 +12,8 @@
 // 内部层次（按任务性质自由编排，不再每轮全量跑满）：
 //   ① 分诊（无显式 type/dimensions 时）：只读勘察判任务类型与评分维度，目标逐条归位
 //   ② 基准调研（可选）：把参考作品转成逐维可核验口径（基准 brief）
-//   ③ 取证：执行调用方给的 simPlan（跑模拟、读数值表），产出 numericAnchors
+//   ③ 证据包（workflow 外）：调度员先用 critic-evidence 的 prepare_evidence 跑模拟、
+//      读数值表、落盘成扁平证据包；workflow 只拿 evidenceDir，各角色按关键词自取切片
 //   ④ 复检（mode=verify）：核对员逐条判旧账，把本轮改动映射到受影响维度
 //   ⑤ 找茬：activeDims 按镜头分组并行逐维找茬并自评扣分；
 //      玩家反馈那一路改用心理机制 schema；细节评委同批并行审假达标与证据造假
@@ -20,12 +21,13 @@
 //   ⑦ 收敛：脚本按双闸门判定收敛 / 停滞 / 硬停
 //
 // 硬约束（写在代码里，不靠自觉）：
-//   - 插件不含任何游戏名、项目路径或模拟脚本；基准与取证全由调用方传
+//   - 插件不含任何游戏名、项目路径或模拟脚本；基准与证据全由调用方传
 //   - 分析者 / 分诊员 / 核对员 / 细节评委 / 判卷均无写工具，物理改不了项目文件
 //   - **修复不在本档**：workflow 只挑刺与核对，改代码由调度员自己做
 //   - 判卷必须分片：单次吃下全部镜头结果再吐全部终裁，镜头一多就会被上游
 //     单次输出上限截断（画面档实测 8 路时整轮报废）
-//   - 体量闸门：每维 findings ≤8、每片 ≤24、汇流 digest ≤80、取证序列化 ≤60K 字符
+//   - 体量闸门：每维 findings ≤8、每片 ≤24、汇流 digest ≤80
+//   - 证据不进 prompt：正文只给 evidenceDir 与关键词，各角色用 critic-evidence 自取
 //   - agentType 必须带 `critic-pipeline:` 插件前缀，否则换仓库即报 not found
 //   - 模型写死在 agent 文件 frontmatter（model:），脚本不逐个传 model
 //   - 所有带 schema 的子代理，prompt 末尾写死「必须调用 StructuredOutput」
@@ -36,11 +38,10 @@
 
 export const meta = {
   name: 'design-round',
-  description: '一轮游戏设计挑刺：分诊（判任务类型与维度） → 基准调研 → 取证（数值/模拟） → 复检（可选，核对上轮修复） → 逐维找茬（含玩家反馈的心理机制解析）+ 细节评委 → 分片判卷与汇流 → 扣分表与收敛判定。只挑刺不改设计。',
+  description: '一轮游戏设计挑刺：分诊（判任务类型与维度） → 基准调研 → 复检（可选，核对上轮修复） → 逐维找茬（含玩家反馈的心理机制解析）+ 细节评委 → 分片判卷与汇流 → 扣分表与收敛判定。证据由调用方预先用 critic-evidence 备好证据包。只挑刺不改设计。',
   phases: [
     { title: '分诊', detail: '无显式 type/dimensions 时，只读勘察判任务类型、选中维度并把目标逐条归位' },
     { title: '基准调研', detail: '无基准 brief 且有参考作品时，把它转成逐维可核验口径' },
-    { title: '取证', detail: '执行调用方给的 simPlan，跑模拟、读数值表，产出数值锚点' },
     { title: '复检', detail: 'mode=verify 时逐条核对上轮必修项现状，并把本轮改动映射到受影响维度' },
     { title: '找茬', detail: '按维度并行找茬并自评扣分；玩家反馈一路做心理机制解析；细节评委审假达标与证据造假' },
     { title: '判卷', detail: '每镜头一片分片判卷（引用式），脚本按编号回填正文' },
@@ -63,8 +64,9 @@ const A = (() => {
 // 入参（由调度员传）：
 //   args.goal            字符串 —— 本轮想改善什么 / 设计方向，必填
 //   args.projectPath     字符串 —— 项目根；读数值配置与代码的起点，可选
-//   args.simPlan         对象   —— 取证与模拟计划，强烈建议给：
-//                                  { run?, workdir?, outputDir?, checks[{name,command}], codePaths[] }
+//   args.evidenceDir     字符串 —— 证据包目录，必填。调度员开跑前先调 critic-evidence 的
+//                                  prepare_evidence({projectPath, run, checks, codePaths}) 拿到；
+//                                  workflow 内所有角色按关键词自取切片，正文不再内联证据
 //   args.feedback        对象|串 —— 玩家反馈：{ text?, files?[] } 或直接字符串，可选
 //   args.benchmarkRefs   数组   —— 参考作品名，可选；有则调研出基准 brief
 //   args.players         数     —— 游玩人数，默认 1；>=2 才自动开合作/意外/双人差分
@@ -91,8 +93,6 @@ const A = (() => {
 
 const DEFAULT_TARGET = 4
 const MAX_ROUNDS_DEFAULT = 4
-// 体量闸门：取证结果序列化后最多这么多字符，超出先深裁再硬切
-const EVIDENCE_CHAR_CAP = 60000
 const MAX_FINDINGS_PER_DIM = 8
 const MAX_SHARD_ITEMS = 24
 const MAX_DIGEST_ITEMS = 80
@@ -274,19 +274,7 @@ const benchmarkRefs = (Array.isArray(A?.benchmarkRefs) ? A.benchmarkRefs : [])
   .map((x) => String(x).trim())
   .filter(Boolean)
 
-const rawPlan = A?.simPlan && typeof A.simPlan === 'object' ? A.simPlan : {}
-const plan = {
-  run: String(rawPlan.run ?? '').trim(),
-  workdir: String(rawPlan.workdir ?? '').trim(),
-  outputDir: String(rawPlan.outputDir ?? '').trim(),
-  checks: (Array.isArray(rawPlan.checks) ? rawPlan.checks : [])
-    .filter((c) => c && String(c.command ?? '').trim())
-    .map((c) => ({
-      name: String(c.name ?? c.command).trim().slice(0, 100),
-      command: String(c.command).trim(),
-    })),
-  codePaths: (Array.isArray(rawPlan.codePaths) ? rawPlan.codePaths : []).map(String).filter(Boolean),
-}
+const evidenceDir = String(A?.evidenceDir ?? '').trim()
 
 // 玩家反馈归一：字符串或 { text, files[] }
 const rawFeedback = A?.feedback
@@ -395,15 +383,15 @@ if (!goal) {
   return { error: 'missing args.goal', dimensions: [] }
 }
 
-const hasEvidence =
-  !!plan.run ||
-  plan.checks.length > 0 ||
-  plan.codePaths.length > 0 ||
-  hasFeedback ||
-  benchmarkRefs.length > 0
-if (!hasEvidence) {
-  log('缺证据：simPlan.run / simPlan.checks / simPlan.codePaths / feedback / benchmarkRefs 至少给一个，否则无从判设计。')
-  return { error: 'missing evidence (simPlan / feedback / benchmarkRefs)', dimensions: [] }
+if (!evidenceDir) {
+  log(
+    '缺证据包 args.evidenceDir。请调度员先用 critic-evidence 的 prepare_evidence({projectPath, run, checks, codePaths}) 生成证据包，把返回的 evidenceDir 传进来；' +
+      '本轮明确不跑取证（跑模拟/读数值表都在 workflow 外），也不静默降级。'
+  )
+  return { error: 'missing args.evidenceDir', dimensions: [] }
+}
+if (!hasFeedback && !benchmarkRefs.length) {
+  log('未给玩家反馈与参考作品：本轮只按证据包里的数值/代码做勘察。')
 }
 
 // 上轮分数：复检时没重打的维度沿用
@@ -751,7 +739,7 @@ function briefRows(keys) {
     .join('\n')
 }
 
-// ── ① 基准调研 + ② 取证：互不依赖，同批并行 ──
+// ── ① 基准调研（取证已在 workflow 外由调度员用 prepare_evidence 做完）──
 const BRIEF_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -829,97 +817,26 @@ ${activeDims.map((d) => `- ${d.key}（${d.name}）：${d.prompt}`).join('\n')}
 ${knownBlock}
 严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
 
-const EVIDENCE_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['executed', 'commands', 'metrics', 'numericAnchors', 'notes'],
-  properties: {
-    executed: { type: 'boolean', description: '是否执行了 simPlan.run' },
-    commands: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['command', 'exitCode', 'output'],
-        properties: {
-          command: { type: 'string' },
-          exitCode: { type: 'number' },
-          output: { type: 'string', description: '末尾输出，失败时必须带原始报错' },
-        },
-      },
-    },
-    metrics: {
-      type: 'array',
-      description: '逐条 checks 命令的量化结果；没给 checks 就空数组',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['name', 'command', 'output'],
-        properties: {
-          name: { type: 'string' },
-          command: { type: 'string' },
-          output: { type: 'string', description: '命令原始输出' },
-        },
-      },
-    },
-    numericAnchors: {
-      type: 'array',
-      description: '从数值表/模拟输出读到的关键数值与偏差；这是数值证据的唯一结构化出口',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['name', 'path', 'observation', 'deviation'],
-        properties: {
-          name: { type: 'string', description: '锚点名，如「第3章敌人HP」' },
-          path: { type: 'string', description: '数值所在文件:行 或 模拟命令' },
-          observation: { type: 'string', description: '实际观测到的数值' },
-          deviation: { type: 'string', description: '与预期/互相之间的偏差，带数字，如 +50%' },
-        },
-      },
-    },
-    notes: { type: 'string', description: '缺依赖、命令失败、读不到的数值等如实写；成功也写一句' },
-  },
+// 证据包取法：各角色按自己的关键词自取切片，正文不内联
+function evidenceBlock(keywords, roleNote) {
+  const kw = (Array.isArray(keywords) ? keywords : [keywords]).filter(Boolean)
+  return `【证据包（不在 prompt 内联，按需自取）】
+项目根：${projectPath || '（未指定）'}
+证据包目录：${evidenceDir}
+取法：调 critic-evidence 的 get_evidence_slice({ evidenceDir, query })，本轮建议关键词：
+${kw.map((k) => `- query: "${k}"`).join('\n')}
+无命中时按返回的可用条目清单换词再取；要补看代码用 code_query（mode=grep / read / list）。${roleNote ? `\n${roleNote}` : ''}
+不要整包读回，取过的不重复取。`
 }
 
-const EVIDENCE_PROMPT = `你是设计档的取证员。只做一件事：按调用方给的模拟与取证计划准备证据，不评价设计、不打分。
-
-【项目根】${projectPath || '（未指定；按当前目录或 simPlan.workdir）'}
-
-【取证与模拟计划】
-${JSON.stringify(plan, null, 2)}
-
-【玩家反馈文件】${feedbackFiles.length ? feedbackFiles.map((f) => `- ${f}`).join('\n') : '（无）'}
-
-【执行规则】
-1. 若 run 非空：在 workdir（为空则 projectPath 或当前目录）下执行该命令；原样记录命令、退出码、末尾输出。失败不要反复重试，把原始报错放进 output。
-2. 若 checks 非空：逐条执行，记录原始输出（相当于量化指标）。
-3. codePaths 是值得读的数值表/公式/掉落表路径（相对 projectPath）。逐条读取，把关键数值与偏差写进 numericAnchors：name（锚点名）、path（文件:行 或模拟命令）、observation（实际数值）、deviation（与预期或互相之间的偏差，必须带数字）。
-4. 玩家反馈只做原样搬运，不做解析（解析归找茬那一路）。
-5. 只允许在 outputDir（若给）下产生文件。不得修改项目源码、资源、配置；不得删除文件；不得安装依赖（缺依赖就报错回来）。
-6. 不得访问、下载或搬运参考作品的素材或数值表。
-
-${knownBlock}
-严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
-
-const researchTask = brief || !benchmarkRefs.length
+const researchRaw = brief || !benchmarkRefs.length
   ? null
-  : agent(RESEARCH_PROMPT, {
+  : await agent(RESEARCH_PROMPT, {
       label: '调研:基准brief',
       phase: '基准调研',
-      agentType: 'critic-pipeline:critic-design-analyst',
+      agentType: 'critic-pipeline:critic-design-researcher',
       schema: BRIEF_SCHEMA,
     })
-
-const evidenceTask = agent(EVIDENCE_PROMPT, {
-  label: '取证:数值与模拟',
-  phase: '取证',
-  agentType: 'critic-pipeline:critic-design-analyst',
-  schema: EVIDENCE_SCHEMA,
-})
-
-const prep = await parallel([() => researchTask, () => evidenceTask])
-const researchRaw = prep?.[0] ?? null
-const evidenceRaw = prep?.[1] ?? null
 
 if (researchRaw) {
   brief = stampBrief({
@@ -939,16 +856,8 @@ if (researchRaw) {
   log('没有可用基准 brief，退化为通用质量线。')
 }
 
-evidence = evidenceRaw ?? {
-  executed: false,
-  commands: [],
-  metrics: [],
-  numericAnchors: [],
-  notes: '取证子代理未返回结果',
-}
-log(
-  `取证完成：命令 ${evidence.commands?.length ?? 0} 条 / 指标 ${evidence.metrics?.length ?? 0} 条 / 数值锚点 ${evidence.numericAnchors?.length ?? 0} 个`
-)
+evidence = { dir: evidenceDir }
+log(`证据包已就绪：${evidenceDir}（正文由各角色按关键词自取，不再内联进 prompt）`)
 
 // ── ②b 复检（mode=verify）：核对旧账 + 把改动映射到受影响维度 ──
 // 只核对调度员上轮手动修的东西，不铺新面；新问题交给定向回归镜头。
@@ -994,7 +903,7 @@ const VERIFY_SCHEMA = {
 
 const VERIFY_PROMPT = `你是设计档的复检核对员。本轮不重新铺开找茬，只做两件事：核对上一轮必修项现在好没好，把本轮改动映射到受影响的评分维度。
 
-【项目根】${projectPath || '（未指定；按当前目录或 simPlan.workdir）'}
+【项目根】${projectPath || '（未指定；按当前目录）'}
 【本轮目标】
 ${goal}
 ${ctxBlock}${scopeBlock}${changesBlock}
@@ -1011,15 +920,14 @@ ${
     : '（无旧账）'
 }
 
-【本轮取证结果（已跑的模拟与数值，供你核对）】
-${boundedEvidence(evidence)}
-
-【模拟与取证计划（可重跑）】
-${JSON.stringify(plan, null, 2)}
+${evidenceBlock(
+  ['上一轮模拟输出', ...prevMustFixItems.map((x) => x.location).filter(Boolean).slice(0, 6)],
+  '要重跑复测就用 run_task({projectPath, command})，命令必须来自上轮记录或证据包 commands 列表。'
+)}
 
 【执行规则】
 1. 每条旧账给固定 id（V1、V2…）与 status：fixed / still-present / worsened / untestable；每条都要 evidence。
-2. 给了模拟命令可重跑复测；失败不要反复重试，原样记录报错。
+2. 需要重跑复测时用 run_task；失败不要反复重试，原样记录报错。
 3. 旧账之外的新缺陷不要报——那是定向回归镜头的活。
 4. touchedDims：根据改动摘要、旧账位置与代码依赖，列出本轮受影响维度并写理由；判断不了就置空。
 5. 只读：不得修改项目源码、数值表、配置、资源；只能在指定 outputDir 产生临时文件；不得删除文件、不得安装依赖。
@@ -1200,11 +1108,13 @@ ${briefRows(lens.dimKeys)}
 【本轮目标】
 ${goal}
 ${ctxBlock}${scopeBlock}${changesBlock}${verifyBlock}
-【取证结果（调用方计划 + 取证员回报）】
-${boundedEvidence(evidence)}
-
-【值得查的数值配置/代码】
-${plan.codePaths.length ? plan.codePaths.map((p) => `- ${p}`).join('\n') : '（调用方未指定；可按需用 Grep/Glob 找数值表、公式、掉落表、成长曲线）'}
+${evidenceBlock(
+  lens.dimKeys.flatMap((k) => {
+    const d = DIMENSIONS.find((x) => x.key === k)
+    return [d?.name ?? k, ...k.split('-')]
+  }),
+  '数值配置/公式/掉落表/成长曲线都在证据包里；缺什么写进 coverageGaps 交调度员补，不要自己满项目翻。'
+)}
 ${historyBlock}${knownBlock}
 【打分规则（必须严格执行）】
 1. 每维满分 5；分数 = 5 - 该维所有 deductions 的 points 之和（最低 0）。points 用 0.5 的倍数。
@@ -1284,11 +1194,10 @@ ${ctxBlock}${scopeBlock}${changesBlock}${verifyBlock}
 ${feedbackText || '（调用方仅给了反馈文件，按下面路径读取）'}
 ${feedbackFiles.length ? feedbackFiles.map((f) => `- ${f}`).join('\n') : ''}
 
-【取证结果（数值/模拟，供你落锚）】
-${boundedEvidence(evidence)}
-
-【值得查的数值配置/代码】
-${plan.codePaths.length ? plan.codePaths.map((p) => `- ${p}`).join('\n') : '（调用方未指定；可按需用 Grep/Glob 找对应配置）'}
+${evidenceBlock(
+  ['feedback', 'balance', 'reward', 'punish', ...feedbackText.slice(0, 200).split(/[^\p{L}\p{N}]+/u).filter((t) => t.length >= 2).slice(0, 8)],
+  '反馈原话不能当锚点；锚必须落到证据包里的数值/模拟输出/代码位置，指不到就进 unverified。'
+)}
 ${historyBlock}${knownBlock}
 【解析规则（必须严格执行）】
 1. 逐条读反馈，先判定它指向哪条心理机制：
@@ -1370,8 +1279,13 @@ ${ctxBlock}
 【基准 brief】
 ${briefRows(finderDimKeys)}
 
-【取证结果】
-${boundedEvidence(evidence)}
+${evidenceBlock(
+  finderDimKeys.flatMap((k) => {
+    const d = DIMENSIONS.find((x) => x.key === k)
+    return [d?.name ?? k, ...k.split('-')]
+  }),
+  '判据 B 要核锚点时就调 verify_anchors({projectPath, anchors:[{path, line, expectText|expectNumber}]}) 批量机械核对，别逐条读原文。'
+)}
 ${historyBlock}${knownBlock}
 【判据 A：假达标】表面像结构判断，实则空泛。例：说「反馈密度不足」却指不出哪次操作没有反馈；说「成长曲线不顺」却给不出坡度数字。
 - 每条写 dimension、problem、whyHollow（哪一层没对齐结构）、evidence。
@@ -1379,7 +1293,7 @@ ${historyBlock}${knownBlock}
 
 【判据 B：证据造假】只拦**具体、可核验的造假**：
 - 用玩家原话当结构证据（anchorKind 本不该容纳 feedback）；
-- 锚点指向的数值/代码行根本不存在，或与取证结果对不上；
+- 锚点指向的数值/代码行根本不存在，或与证据包对不上（先用 verify_anchors 机械核，失败项才深看）；
 - 编造玩家没说过的话。
 - 每条写 finding、quote、why。有具体证据才报，模糊怀疑不报。
 
@@ -1599,15 +1513,6 @@ function clipDeep(v, maxStr = 800, depth = 0) {
   return v
 }
 
-// 取证结果的统一出口：先深裁，再按总字符硬切，防止单轮 prompt 吃爆上游输入上限
-function boundedEvidence(ev) {
-  const deep = JSON.stringify(clipDeep(ev, 800), null, 2)
-  if (deep.length <= EVIDENCE_CHAR_CAP) return deep
-  const harder = JSON.stringify(clipDeep(ev, 300, 0), null, 2)
-  if (harder.length <= EVIDENCE_CHAR_CAP) return harder
-  return `${harder.slice(0, EVIDENCE_CHAR_CAP)}\n…（取证结果超长，已截断）`
-}
-
 let findingSeq = 0
 const lensShards = lensResults.map((r) => {
   const all = Array.isArray(r.findings) ? r.findings : []
@@ -1690,8 +1595,10 @@ ${JSON.stringify(dims, null, 2)}
 【本片 findings（只裁决这些 id）】
 ${JSON.stringify(shard.items, null, 2)}
 
-【取证结果（核对证据用，不要从中另找新缺陷）】
-${JSON.stringify(clipDeep(evidence), null, 2)}
+${evidenceBlock(
+  dims.map((d) => d.name),
+  '只用于核对本片 findings 的锚点，不要从中另找新缺陷；能机械核的（文件:行:数值）先用 verify_anchors 批量核完再裁决。'
+)}
 ${historyBlock}${knownBlock}
 严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
 }

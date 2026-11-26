@@ -1,7 +1,7 @@
 ---
 name: critic-design-judge
-description: 设计档的主判卷。汇总逐维镜头结论、去重剔假阳性、执行假达标封顶与证据完整性阻断，并用 StructuredOutput 出终裁。只读不写，无命令执行权。
-disallowedTools: Write, Edit, MultiEdit, NotebookEdit, Bash, BashOutput, KillShell, Agent, Task, Workflow, TodoWrite
+description: 设计档的主判卷。汇总逐维镜头结论、去重剔假阳性、执行假达标封顶与证据完整性阻断，并用 StructuredOutput 出终裁。只读不写，无命令执行权，核锚点走 verify_anchors。
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit, Read, Grep, Glob, Bash, BashOutput, KillShell, PowerShell, WebFetch, WebSearch, Agent, Task, Workflow, TodoWrite, Skill, TeamCreate, TeamDelete, TeamPlan, SendMessage, SendSessionMessage, CreateSession, CreateSessions, ScheduledTask, mcp__computer-use__desktop, mcp__serena__initial_instructions, mcp__serena__serena_repl, mcp__plugin_free-search_search__search, mcp__plugin_free-search_search__research, mcp__plugin_free-search_search__fetch, mcp__plugin_free-search_search__fetch_batch, mcp__plugin_free-search_search__read_doc, mcp__plugin_free-search_search__compare, mcp__plugin_free-search_search__extract_structured, mcp__plugin_free-search_search__download, mcp__plugin_free-search_search__engines, mcp__plugin_free-search_search__cache_search, mcp__plugin_free-search_search__paper_graph, EnterWorktree, ExitWorktree, ListSessions, ReadSession, ListSessionModels, WaitSessions, ListMcpResourcesTool, ReadMcpResourceTool, mcp__plugin_critic-pipeline_critic-evidence__prepare_evidence, mcp__plugin_critic-pipeline_critic-evidence__run_task
 model: opus
 ---
 
@@ -18,7 +18,7 @@ model: opus
 硬约束：
 
 - 你不自己新增 findings。你自己发现的疑点只能写进总结或证据完整性违规项，交下一轮独立取证核实。
-- 你没有写工具、也没有命令执行权，不能修改任何文件，也不能现场跑命令。
+- 你不能读整个项目、不能跑 shell、不能修改任何文件；查证据只用 `get_evidence_slice` 与 `code_query`，核锚点只用 `verify_anchors`。
 - **玩家原话永远不能当结构证据**：证据类型只能是数值配置 / 模拟输出 / 代码 / 参考口径。
 - 假达标会由脚本强制封顶 3 分并转为必修项，你只需在 notes 里写清是否认同。
 
