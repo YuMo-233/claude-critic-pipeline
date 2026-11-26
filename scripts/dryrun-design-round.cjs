@@ -479,6 +479,41 @@ const argsByCase = {
       },
     ],
   },
+  // 传了证据索引：角色应按条目 id 定点取一次切片，不再自己按关键词猜
+  evidenceindex: {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    evidenceDir,
+    feedback: { text: '第3章太难了' },
+    players: 1,
+    round: 1,
+    evidenceIndex: [
+      {
+        id: 'e1',
+        kind: 'metric',
+        source: 'src/config.js:12',
+        tags: ['combat-balance', '数值平衡'],
+        summary: 'bossHp = 8',
+        lineCount: 4,
+      },
+      {
+        id: 'e2',
+        kind: 'metric',
+        source: 'src/growth.js:30',
+        tags: ['economy-growth', '经济成长'],
+        summary: 'goldPerLevel = 1.25',
+        lineCount: 3,
+      },
+      {
+        id: 'e3',
+        kind: 'command-output',
+        source: 'scripts/metrics.js',
+        tags: ['sim-output'],
+        summary: '模拟输出：第3章通过率 0.42',
+        lineCount: 40,
+      },
+    ],
+  },
 }
 
 const harness = `
@@ -963,6 +998,52 @@ __run()
         ch && ch.mode === 'patch' && (ch.refsAdded ?? []).includes('MockRefB') &&
           (ch.rewrittenDims ?? []).some((d) => d.key === 'combat-balance' && d.reason),
         'patch-refs: changes should record patch mode, added refs and reasons'
+      )
+    } else if (CASE === 'evidenceindex') {
+      assert(
+        lensCalls.every((c) => c.prompt.includes('证据切片（定点取')),
+        'evidenceindex: lens prompts should use the pick block'
+      )
+      assert(
+        !lensCalls.some((c) => c.prompt.includes('本轮建议关键词')),
+        'evidenceindex: lens prompts must not fall back to keyword guessing'
+      )
+      const numbers = lensCalls.find((c) => c.label.includes('数值平衡'))
+      assert(
+        numbers && numbers.prompt.includes('"e1"'),
+        'evidenceindex: numbers lens should get the combat metric id'
+      )
+      const economy = lensCalls.find((c) => c.label.includes('经济与成长'))
+      assert(
+        economy && economy.prompt.includes('"e2"'),
+        'evidenceindex: economy lens should get the economy metric id'
+      )
+      assert(
+        numbers && !numbers.prompt.includes('"e3"'),
+        'evidenceindex: unrelated sim entry must not be pushed to the numbers lens'
+      )
+      assert(
+        numbers && numbers.prompt.includes('只调**一次** get_evidence_slice'),
+        'evidenceindex: pick block should cap the slice call to once'
+      )
+      const detail = agentCalls.filter((c) => c.label.includes('评审'))
+      assert(
+        detail.length > 0 && detail.every((c) => c.prompt.includes('证据切片（定点取')),
+        'evidenceindex: detail judge should use the pick block'
+      )
+      assert(
+        detail.every((c) => !c.prompt.includes('本轮建议关键词')),
+        'evidenceindex: detail judge must not keyword-guess'
+      )
+      const judge = agentCalls.filter((c) => c.label.startsWith('分片判卷'))
+      assert(
+        judge.length > 0 && judge.every((c) => c.prompt.includes('证据切片（定点取')),
+        'evidenceindex: shard judge should use the pick block'
+      )
+      const fun = lensCalls.find((c) => c.prompt.includes('趣味性结构代理'))
+      assert(
+        fun && fun.prompt.includes('索引里没有与本维直接对应的条目'),
+        'evidenceindex: unmatched dim should fall back to a single query hint'
       )
     } else if (CASE === 'patch-fail') {
       assert(r.briefStatus === 'reused', 'patch-fail: should fall back to reused, got ' + r.briefStatus)

@@ -24,6 +24,7 @@ description: 跑一轮游戏设计挑刺。先由只读分诊员判任务类型�
 它把命令输出与文件内容拍平成证据包，落在 `<projectPath>/.critic/evidence/<label>/`（`index.json` + `entries.jsonl` + `raw/`），只返回索引表与 `evidenceDir`。
 
 - 拿到 `evidenceDir` 后原样传给 workflow 的 `args.evidenceDir`；**不传就明确报缺失、不静默降级**。
+- **把 `prepare_evidence` 返回的索引表也一起传进 `args.evidenceIndex`**（`[{id, kind, source, tags, summary, lineCount}]`）——传了之后，镜头 / 细节评委 / 分片判卷 / 复检按各自维度自动拿到该取的条目 id，只调一次 `get_evidence_slice({ids})`；不传就只能按关键词自己搜，裁决类角色会为此多花几十次工具调用（实测判卷与复检 token 翻倍）。索引表只含元数据，不占多少体积。
 - 证据包里没有的东西，让镜头写进 `coverageGaps`，下一轮补命令或补 `codePaths` 再重新 `prepare_evidence`。
 - `projectPath` 同时用于定位项目与证据包，本身不算证据。
 

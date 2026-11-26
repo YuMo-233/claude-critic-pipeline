@@ -137,7 +137,7 @@
 
 **玩家反馈怎么处理**：每条反馈必须映射到心理学机制（自主 / 胜任 / 归属 / 心流 / 损失厌恶 / 变比率奖励 / 沉没成本 / 峰终 / 其他），再落到具体数值:行、模拟输出或代码位置。落不了锚的进 `unverifiedFeedback` 单列，**不计分、不阻塞收敛**。纯情绪直接不入账。
 
-**取证在 workflow 外**：调度员先用插件自带的 `critic-evidence` MCP server 调 `prepare_evidence`，把模拟输出、校验命令与配置拍到 `.critic/evidence/<label>/`；workflow 只收 `evidenceDir`，各角色用 `get_evidence_slice` 按关键词取切片、用 `verify_anchors` 机械核锚点。证据不再内联进 prompt——这是本档的主要 token 省法。
+**取证在 workflow 外**：调度员先用插件自带的 `critic-evidence` MCP server 调 `prepare_evidence`，把模拟输出、校验命令与配置拍到 `.critic/evidence/<label>/`；workflow 收 `evidenceDir` 与索引表 `evidenceIndex`。传了索引表，各角色按自己维度从索引里筛出的**条目 id 定点取一次** `get_evidence_slice({ids})`；不传则退化为按关键词自己搜（裁决类角色会因此多花几十次工具调用）。锚点核对一律用 `verify_anchors` 机械核。证据正文不内联进 prompt——这是本档的主要 token 省法。
 
 **参考作品页面被反爬拦住**：调研员的取数分两级——先 free-search（毫秒级，多数页面够用）；只有当它的 fetch 返回验证页 / 403 / 空壳时，才改用插件自带的 `critic-browse` MCP（工具 `browse_fetch`）。`browse_fetch` 用真实浏览器（ego-browser）打开同一 URL，返回标题、正文与页面内链接；能过 Cloudflare 挡住的 wiki.gg / fandom 系站点与需要 JS 渲染的页面。代价是每页约 2 秒 + 一个浏览器进程，只当兜底，不替代搜索。依赖本机装有 ego-browser（可用环境变量 `EGO_BROWSER_BIN` 指路径）。
 
@@ -168,6 +168,7 @@
 |---|---|---|
 | `goal` | 是 | 本轮想改善什么（可以很宽，分诊会拆条归位） |
 | `evidenceDir` | 是 | `prepare_evidence` 产出的证据包目录；不传直接早退 |
+| `evidenceIndex` | 强烈建议 | `prepare_evidence` 返回的索引表 `[{id, kind, source, tags, summary, lineCount}]`；传了各角色按 id 定点取切片，不传只能按关键词自搜（判卷/复检会变贵） |
 | `feedback` | 否 | 玩家反馈文本，`string` 或 `{text, files[]}`；给了才开反馈维 |
 | `benchmarkRefs` | 否 | 参考作品名，由调用方点名 |
 | `players` | 否 | 人数，默认 1；2 人以上开合作/差分/意外四维 |
@@ -313,7 +314,7 @@ critic-pipeline/
 - 零成本干跑（不调真实子代理，只验参数流动、分片判卷合并与收敛判定）：
   - `node scripts/dryrun-critic-round.cjs <case>`：normal / cleanup / explicit-lenses / nodiff / escalate / dropall
   - `node scripts/dryrun-quality-round.cjs <case>`：normal / plagiarism / converged / stalled / noref / nocapture / researchfail / lensfail / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
-  - `node scripts/dryrun-design-round.cjs <case>`（32 个）：normal / researchfail / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified / triage-map / triage-fallback / goal-uncovered / accept-uncovered / scope / not-applicable / cap-findings / verify-fixed / verify-still / verify-fallback / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory / patch-refs / patch-fail
+  - `node scripts/dryrun-design-round.cjs <case>`（33 个）：normal / researchfail / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified / triage-map / triage-fallback / goal-uncovered / accept-uncovered / scope / not-applicable / cap-findings / verify-fixed / verify-still / verify-fallback / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory / patch-refs / patch-fail / evidenceindex
 - `node scripts/selftest-mcp.mjs`：critic-evidence 五工具自测（造临时玩具项目，起 stdio server 全链路跑一遍）
 - `node scripts/selftest-browse.mjs [url]`：critic-browse 自测（默认抓一个 Cloudflare 挡住的 wiki 页，验证真能拿到正文）
 - ADR：`D:\app\YuMoBox\docs\adr\0055-critic-pipeline-workflow.md`

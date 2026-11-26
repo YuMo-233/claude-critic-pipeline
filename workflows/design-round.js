@@ -13,7 +13,8 @@
 //   ① 分诊（无显式 type/dimensions 时）：只读勘察判任务类型与评分维度，目标逐条归位
 //   ② 基准调研（可选）：把参考作品转成逐维可核验口径（基准 brief）
 //   ③ 证据包（workflow 外）：调度员先用 critic-evidence 的 prepare_evidence 跑模拟、
-//      读数值表、落盘成扁平证据包；workflow 只拿 evidenceDir，各角色按关键词自取切片
+//      读数值表、落盘成扁平证据包；workflow 拿 evidenceDir（+ 可选 evidenceIndex 索引表），
+//      各角色按条目 id 定点取一次切片，正文不内联
 //   ④ 复检（mode=verify）：核对员逐条判旧账，把本轮改动映射到受影响维度
 //   ⑤ 找茬：activeDims 按镜头分组并行逐维找茬并自评扣分；
 //      玩家反馈那一路改用心理机制 schema；细节评委同批并行审假达标与证据造假
@@ -27,7 +28,7 @@
 //   - 判卷必须分片：单次吃下全部镜头结果再吐全部终裁，镜头一多就会被上游
 //     单次输出上限截断（画面档实测 8 路时整轮报废）
 //   - 体量闸门：每维 findings ≤8、每片 ≤24、汇流 digest ≤80
-//   - 证据不进 prompt：正文只给 evidenceDir 与关键词，各角色用 critic-evidence 自取
+//   - 证据不进 prompt：正文只给 evidenceDir 与索引里的条目 id，各角色用 critic-evidence 定点取
 //   - agentType 必须带 `critic-pipeline:` 插件前缀，否则换仓库即报 not found
 //   - 模型写死在 agent 文件 frontmatter（model:），脚本不逐个传 model
 //   - 所有带 schema 的子代理，prompt 末尾写死「必须调用 StructuredOutput」
@@ -65,8 +66,10 @@ const A = (() => {
 //   args.goal            字符串 —— 本轮想改善什么 / 设计方向，必填
 //   args.projectPath     字符串 —— 项目根；读数值配置与代码的起点，可选
 //   args.evidenceDir     字符串 —— 证据包目录，必填。调度员开跑前先调 critic-evidence 的
-//                                  prepare_evidence({projectPath, run, checks, codePaths}) 拿到；
-//                                  workflow 内所有角色按关键词自取切片，正文不再内联证据
+//                                  prepare_evidence({projectPath, run, checks, codePaths}) 拿到
+//   args.evidenceIndex   数组   —— prepare_evidence 返回的索引表（id/kind/source/tags/summary），
+//                                  强烈建议传：传了各角色按条目 id 定点取一次切片；不传则退化
+//                                  为按关键词自取（裁决类角色会自己翻，实测更贵）
 //   args.feedback        对象|串 —— 玩家反馈：{ text?, files?[] } 或直接字符串，可选
 //   args.benchmarkRefs   数组   —— 参考作品名，可选；有则调研出基准 brief
 //   args.players         数     —— 游玩人数，默认 1；>=2 才自动开合作/意外/双人差分
@@ -275,6 +278,25 @@ const benchmarkRefs = (Array.isArray(A?.benchmarkRefs) ? A.benchmarkRefs : [])
   .filter(Boolean)
 
 const evidenceDir = String(A?.evidenceDir ?? '').trim()
+
+// 证据索引（可选但强烈建议）：调度员把 prepare_evidence 返回的索引表原样传进来。
+// 有索引时各角色按条目 id 定点取一次切片，不再自己按关键词反复猜——实测没有索引时，
+// 判卷 / 复检 / 细节评委会被迫自己探索几十次，比改造前更贵。
+const evidenceIndex = (Array.isArray(A?.evidenceIndex) ? A.evidenceIndex : [])
+  .filter((e) => e && typeof e === 'object' && String(e.id ?? '').trim())
+  .map((e) => ({
+    id: String(e.id).trim(),
+    kind: String(e.kind ?? '').trim(),
+    source: String(e.source ?? '').trim().slice(0, 160),
+    tags: (Array.isArray(e.tags) ? e.tags : [])
+      .map((t) => String(t ?? '').trim())
+      .filter(Boolean)
+      .slice(0, 12),
+    summary: String(e.summary ?? '').trim().slice(0, 200),
+    lineCount: Number(e.lineCount ?? 0) || 0,
+  }))
+  .slice(0, 400)
+const hasEvidenceIndex = evidenceIndex.length > 0
 
 // 玩家反馈归一：字符串或 { text, files[] }
 const rawFeedback = A?.feedback
@@ -999,6 +1021,67 @@ ${kw.map((k) => `- query: "${k}"`).join('\n')}
 不要整包读回，取过的不重复取。`
 }
 
+// 按维度名/关键词从证据索引里挑条目（只读索引元数据，不碰正文）
+function pickEvidenceEntries(keys, limit) {
+  const want = (Array.isArray(keys) ? keys : [keys])
+    .map((x) => String(x ?? '').trim().toLowerCase())
+    .filter((x) => x.length >= 2)
+  const uniq = [...new Set(want)]
+  if (!uniq.length) return evidenceIndex.slice(0, limit)
+  const scored = evidenceIndex.map((e) => {
+    const tags = e.tags.map((t) => t.toLowerCase())
+    const source = e.source.toLowerCase()
+    const all = `${e.summary} ${tags.join(' ')} ${source}`.toLowerCase()
+    let score = 0
+    for (const w of uniq) {
+      if (tags.some((t) => t === w)) score += 5
+      else if (tags.some((t) => t.includes(w) || w.includes(t))) score += 4
+      else if (source.includes(w)) score += 3
+      else if (all.includes(w)) score += 1
+    }
+    return { e, score }
+  })
+  return scored
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((x) => x.e)
+}
+
+// 定点取切片：把索引里筛出来的条目 id 直接给角色，只准调一次，禁止自己乱翻
+function evidencePickBlock(keys, roleNote, opts = {}) {
+  const limit = opts.limit ?? 24
+  const codeBudget = opts.codeBudget ?? 3
+  const picks = pickEvidenceEntries(keys, limit)
+  const ids = picks.map((e) => e.id)
+  const rows = picks
+    .map(
+      (e) =>
+        `- ${e.id}${e.kind ? ` [${e.kind}]` : ''} ${e.source || ''}${e.summary ? `：${e.summary}` : ''}`
+    )
+    .join('\n')
+  const callLine = ids.length
+    ? `取法：只调**一次** get_evidence_slice({ evidenceDir, ids: ${JSON.stringify(ids)} })，把这批正文一次拿回来。`
+    : `索引里没有与本维直接对应的条目：最多调**一次** get_evidence_slice({ evidenceDir, query: "…" })，query 用你自己的维度名。`
+  const codeLine =
+    codeBudget > 0
+      ? `补看代码用 code_query，最多 ${codeBudget} 次；核锚点用 verify_anchors 批量机械核，不要逐条读原文。`
+      : `核锚点用 verify_anchors 批量机械核，不要逐条读原文；不要自己翻代码。`
+  return `【证据切片（定点取，不要把证据包整包读回）】
+项目根：${projectPath || '（未指定）'}
+证据包目录：${evidenceDir}
+索引里筛给你的条目（已按本维关键词挑过；正文没内联，按 id 取）：
+${rows || '（无匹配条目）'}
+${callLine}
+${codeLine}
+不许按关键词反复试、不许把整个证据包拉回来；取过的条目不要重复取。${roleNote ? `\n${roleNote}` : ''}`
+}
+
+// 统一入口：有索引走定点取切片（便宜、确定），没索引退化为关键词自取（兼容旧调用方）
+function evidenceFor(keys, roleNote, opts) {
+  return hasEvidenceIndex ? evidencePickBlock(keys, roleNote, opts) : evidenceBlock(keys, roleNote)
+}
+
 // 增量轮只派一次「补差异」调研，不重查旧参考；全量轮行为不变
 let researchRaw = null
 let patchRaw = null
@@ -1070,7 +1153,12 @@ if (patchRaw && patchRequest) {
 }
 
 evidence = { dir: evidenceDir }
-log(`证据包已就绪：${evidenceDir}（正文由各角色按关键词自取，不再内联进 prompt）`)
+log(
+  `证据包已就绪：${evidenceDir}（正文由各角色自取，不再内联进 prompt；` +
+    (hasEvidenceIndex
+      ? `索引 ${evidenceIndex.length} 条，按条目 id 定点取切片）`
+      : `未传 evidenceIndex，角色将按关键词自己搜索——判卷/复检这类裁决角色会变贵，建议传入）`)
+)
 
 // ── ②b 复检（mode=verify）：核对旧账 + 把改动映射到受影响维度 ──
 // 只核对调度员上轮手动修的东西，不铺新面；新问题交给定向回归镜头。
@@ -1133,9 +1221,10 @@ ${
     : '（无旧账）'
 }
 
-${evidenceBlock(
-  ['上一轮模拟输出', ...prevMustFixItems.map((x) => x.location).filter(Boolean).slice(0, 6)],
-  '要重跑复测就用 run_task({projectPath, command})，命令必须来自上轮记录或证据包 commands 列表。'
+${evidenceFor(
+  ['上一轮模拟输出', 'sim', ...prevMustFixItems.map((x) => x.location).filter(Boolean).slice(0, 6)],
+  '要重跑复测就用 run_task({projectPath, command})，命令必须来自上轮记录或证据包 commands 列表。',
+  { limit: 16, codeBudget: 2 }
 )}
 
 【执行规则】
@@ -1321,12 +1410,13 @@ ${briefRows(lens.dimKeys)}
 【本轮目标】
 ${goal}
 ${ctxBlock}${scopeBlock}${changesBlock}${verifyBlock}
-${evidenceBlock(
+${evidenceFor(
   lens.dimKeys.flatMap((k) => {
     const d = DIMENSIONS.find((x) => x.key === k)
     return [d?.name ?? k, ...k.split('-')]
   }),
-  '数值配置/公式/掉落表/成长曲线都在证据包里；缺什么写进 coverageGaps 交调度员补，不要自己满项目翻。'
+  '数值配置/公式/掉落表/成长曲线都在证据包里；缺什么写进 coverageGaps 交调度员补，不要自己满项目翻。',
+  { limit: 30, codeBudget: 4 }
 )}
 ${historyBlock}${knownBlock}
 【打分规则（必须严格执行）】
@@ -1407,9 +1497,10 @@ ${ctxBlock}${scopeBlock}${changesBlock}${verifyBlock}
 ${feedbackText || '（调用方仅给了反馈文件，按下面路径读取）'}
 ${feedbackFiles.length ? feedbackFiles.map((f) => `- ${f}`).join('\n') : ''}
 
-${evidenceBlock(
+${evidenceFor(
   ['feedback', 'balance', 'reward', 'punish', ...feedbackText.slice(0, 200).split(/[^\p{L}\p{N}]+/u).filter((t) => t.length >= 2).slice(0, 8)],
-  '反馈原话不能当锚点；锚必须落到证据包里的数值/模拟输出/代码位置，指不到就进 unverified。'
+  '反馈原话不能当锚点；锚必须落到证据包里的数值/模拟输出/代码位置，指不到就进 unverified。',
+  { limit: 20, codeBudget: 3 }
 )}
 ${historyBlock}${knownBlock}
 【解析规则（必须严格执行）】
@@ -1492,12 +1583,13 @@ ${ctxBlock}
 【基准 brief】
 ${briefRows(finderDimKeys)}
 
-${evidenceBlock(
+${evidenceFor(
   finderDimKeys.flatMap((k) => {
     const d = DIMENSIONS.find((x) => x.key === k)
     return [d?.name ?? k, ...k.split('-')]
   }),
-  '判据 B 要核锚点时就调 verify_anchors({projectPath, anchors:[{path, line, expectText|expectNumber}]}) 批量机械核对，别逐条读原文。'
+  '判据 B 要核锚点时就调 verify_anchors({projectPath, anchors:[{path, line, expectText|expectNumber}]}) 批量机械核对，别逐条读原文。',
+  { limit: 20, codeBudget: 0 }
 )}
 ${historyBlock}${knownBlock}
 【判据 A：假达标】表面像结构判断，实则空泛。例：说「反馈密度不足」却指不出哪次操作没有反馈；说「成长曲线不顺」却给不出坡度数字。
@@ -1808,9 +1900,16 @@ ${JSON.stringify(dims, null, 2)}
 【本片 findings（只裁决这些 id）】
 ${JSON.stringify(shard.items, null, 2)}
 
-${evidenceBlock(
-  dims.map((d) => d.name),
-  '只用于核对本片 findings 的锚点，不要从中另找新缺陷；能机械核的（文件:行:数值）先用 verify_anchors 批量核完再裁决。'
+${evidenceFor(
+  [
+    ...dims.map((d) => d.name),
+    ...(shard.items ?? [])
+      .map((x) => String(x?.evidence ?? x?.location ?? ''))
+      .filter(Boolean)
+      .slice(0, 6),
+  ],
+  '只用于核对本片 findings 的锚点，不要从中另找新缺陷；能机械核的（文件:行:数值）先用 verify_anchors 批量核完再裁决。',
+  { limit: 16, codeBudget: 0 }
 )}
 ${historyBlock}${knownBlock}
 严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
