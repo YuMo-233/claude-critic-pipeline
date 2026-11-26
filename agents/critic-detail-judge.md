@@ -1,7 +1,7 @@
 ---
 name: critic-detail-judge
 description: 画面档的细节评委。独立于镜头与主判卷，专审「假达标」（表面像细节松）与抄袭风险（只拦具体标识）。只读不写。
-disallowedTools: Write, Edit, MultiEdit, NotebookEdit, Bash, BashOutput, KillShell, Agent, Task, Workflow, TodoWrite
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit, Bash, BashOutput, KillShell, Agent, Task, Workflow, TodoWrite, mcp__plugin_critic-pipeline_critic-browse__browse_fetch
 model: opus
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: critic-judge
 description: 只读判卷者。用于 critic-round workflow 的判卷阶段：去重、剔假阳性、定级、判断是否升级并用 StructuredOutput 出终裁。
-disallowedTools: Write, Edit, MultiEdit, NotebookEdit, Bash, BashOutput, KillShell, Agent, Task, Workflow, WebFetch, WebSearch, TodoWrite
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit, Bash, BashOutput, KillShell, Agent, Task, Workflow, WebFetch, WebSearch, TodoWrite, mcp__plugin_critic-pipeline_critic-browse__browse_fetch
 model: opus
 ---
 

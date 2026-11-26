@@ -139,6 +139,8 @@
 
 **取证在 workflow 外**：调度员先用插件自带的 `critic-evidence` MCP server 调 `prepare_evidence`，把模拟输出、校验命令与配置拍到 `.critic/evidence/<label>/`；workflow 只收 `evidenceDir`，各角色用 `get_evidence_slice` 按关键词取切片、用 `verify_anchors` 机械核锚点。证据不再内联进 prompt——这是本档的主要 token 省法。
 
+**参考作品页面被反爬拦住**：调研员的取数分两级——先 free-search（毫秒级，多数页面够用）；只有当它的 fetch 返回验证页 / 403 / 空壳时，才改用插件自带的 `critic-browse` MCP（工具 `browse_fetch`）。`browse_fetch` 用真实浏览器（ego-browser）打开同一 URL，返回标题、正文与页面内链接；能过 Cloudflare 挡住的 wiki.gg / fandom 系站点与需要 JS 渲染的页面。代价是每页约 2 秒 + 一个浏览器进程，只当兜底，不替代搜索。依赖本机装有 ego-browser（可用环境变量 `EGO_BROWSER_BIN` 指路径）。
+
 一次调用 = 一轮：
 
 ```
@@ -257,7 +259,7 @@ claude plugin install critic-pipeline@haha-connectors
 
 ## 硬约束
 
-- **只挑刺，不修代码**。所有角色都不用 `tools` 白名单，而是用 `disallowedTools` 禁掉全部写工具、子代理派发工具与自由 shell，物理上改不了代码。设计档的取数口子只剩插件自带的 `critic-evidence`：`get_evidence_slice`（取证据切片）、`code_query`（grep/read/list）、`verify_anchors`（批量核锚点），复检额外保留 `run_task`（只跑调用方给过的命令）。`prepare_evidence` 只属于调度员，agent 一律禁用——否则等于给了任意命令执行。`serena` 必禁：`serena_repl` 是能读能写还能跑 shell 的万能口子，`disallowedTools` 拦不住它内部的工具。
+- **只挑刺，不修代码**。所有角色都不用 `tools` 白名单，而是用 `disallowedTools` 禁掉全部写工具、子代理派发工具与自由 shell，物理上改不了代码。设计档的取数口子只剩插件自带的 `critic-evidence`：`get_evidence_slice`（取证据切片）、`code_query`（grep/read/list）、`verify_anchors`（批量核锚点），复检额外保留 `run_task`（只跑调用方给过的命令）。`prepare_evidence` 只属于调度员，agent 一律禁用——否则等于给了任意命令执行。`serena` 必禁：`serena_repl` 是能读能写还能跑 shell 的万能口子，`disallowedTools` 拦不住它内部的工具。`critic-browse` 的 `browse_fetch` **只给基准调研员**（它是唯一需要查外部资料的只读角色），其余 agent 全禁；该工具只能按 URL 取页面正文，不带点击、不带脚本执行。
 - **不许用 `tools` 白名单**。本机构建下，agent 一旦声明 `tools`，引擎注入的 `StructuredOutput` 会被过滤掉，带 schema 的子代理必然交不出结果。
 - **每轮全新视角**。每轮都是一次性子代理，无记忆，天然"换人挑刺"。
 - **判卷不自审**。分片判卷与汇流都不新增 findings（分片 schema 物理上没有新增字段），汇流发现的疑点只走升级门，交给下一轮独立找茬核实。
@@ -268,11 +270,12 @@ claude plugin install critic-pipeline@haha-connectors
 ```
 critic-pipeline/
 ├── plugin.json              # 插件 manifest
-├── .mcp.json                # 插件自带 MCP server 注册（critic-evidence）
+├── .mcp.json                # 插件自带 MCP server 注册（critic-evidence / critic-browse）
 ├── .claude-plugin/
 │   └── plugin.json          # 插件 manifest（打包版）
 ├── mcp/
-│   └── evidence-server.mjs   # 零依赖 stdio MCP：prepare_evidence / get_evidence_slice / code_query / verify_anchors / run_task
+│   ├── evidence-server.mjs   # 零依赖 stdio MCP：prepare_evidence / get_evidence_slice / code_query / verify_anchors / run_task
+│   └── browse-server.mjs     # 零依赖 stdio MCP：browse_fetch（真实浏览器取被反爬拦住的页面）
 ├── agents/
 │   ├── critic-reader.md               # 代码档找茬角色（只读 + 快档）
 │   ├── critic-judge.md                # 代码/画面档分片判卷与汇流判卷共用角色（只读 + 强档）
@@ -292,7 +295,8 @@ critic-pipeline/
 │   ├── dryrun-quality-round.cjs  # 画面档零成本干跑
 │   ├── dryrun-design-round.cjs   # 设计档零成本干跑
 │   ├── dryrun-critic-round.cjs   # 代码档零成本干跑
-│   └── selftest-mcp.mjs          # critic-evidence 五工具自测
+│   ├── selftest-mcp.mjs          # critic-evidence 五工具自测
+│   └── selftest-browse.mjs       # critic-browse 自测（真实抓一个 Cloudflare wiki 页）
 └── workflows/
     ├── critic-round.js           # 代码档流水线
     ├── quality-round.js          # 画面档流水线
@@ -308,5 +312,6 @@ critic-pipeline/
   - `node scripts/dryrun-quality-round.cjs <case>`：normal / plagiarism / converged / stalled / noref / nocapture / researchfail / lensfail / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
   - `node scripts/dryrun-design-round.cjs <case>`（30 个）：normal / researchfail / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified / triage-map / triage-fallback / goal-uncovered / accept-uncovered / scope / not-applicable / cap-findings / verify-fixed / verify-still / verify-fallback / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
 - `node scripts/selftest-mcp.mjs`：critic-evidence 五工具自测（造临时玩具项目，起 stdio server 全链路跑一遍）
+- `node scripts/selftest-browse.mjs [url]`：critic-browse 自测（默认抓一个 Cloudflare 挡住的 wiki 页，验证真能拿到正文）
 - ADR：`D:\app\YuMoBox\docs\adr\0055-critic-pipeline-workflow.md`
 - 团队台本：`D:\app\YuMoBox\.claude\team-kits\standard-kit.json`（干活用团队，挑刺用本插件，两者解耦）

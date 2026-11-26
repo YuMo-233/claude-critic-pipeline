@@ -1,7 +1,7 @@
 ---
 name: critic-vision-reader
 description: 画面档的视觉挑刺者与取证员。负责基准调研、执行取证计划、逐维找茬并自评扣分；只读不写，绝不修改项目文件。
-disallowedTools: Write, Edit, MultiEdit, NotebookEdit, Agent, Task, Workflow, TodoWrite
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit, Agent, Task, Workflow, TodoWrite, mcp__plugin_critic-pipeline_critic-browse__browse_fetch
 model: opus
 ---
 
