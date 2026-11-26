@@ -76,7 +76,8 @@ description: 跑一轮游戏设计挑刺。先由只读分诊员判任务类型�
 - `converged` / `stopReason` / `stuckDimensions`：收敛状态、停因、卡在哪几维；
 - `progressRecord`：跨轮快照，**存下来传给下一轮**（内含 `briefRevision`，跨版本不比分数）；
 - `benchmarkBrief`：基准口径，**写回 `.critic/benchmark-design.json`**，后续轮不必重复调研；
-- `briefStatus` / `briefPath` / `briefRevision`：本轮是复用还是重研（`reused` / `researched` / `stale-researched` / `unused`）、建议写回路径、本轮所用基准修订号——**调度员据此决定是否写回**；
+- `briefStatus` / `briefPath` / `briefRevision`：本轮是复用、增量补维还是重研（`reused` / `researched` / `patched-researched` / `stale-researched` / `unused`）、建议写回路径、本轮所用基准修订号——**调度员据此决定是否写回**；
+- `briefMode` / `briefAffectedDims` / `briefPatchFailed`：基准怎么来的（`full` 全量重研 / `patch` 增量只补受新参考影响的维 / `unchanged` 增量失败沿用旧 brief / `reused` 原样复用）、本轮被重写口径的维（这些维旧分数不可比，其余维仍可比）、增量调研是否没产出；
 - `handoff`：按维度分组的施工清单，可直接转给施工队；未达标的维会附「参考做法 + 可核验口径 + 出处」（脚本从 brief 拼，无有效基准时明示不附）。
 
 ## 4. 驱动长期迭代
@@ -86,9 +87,11 @@ description: 跑一轮游戏设计挑刺。先由只读分诊员判任务类型�
 - **一次性准备**：确认项目 `.gitignore` 里有 `.critic/`，没有就追加一行（基准笔记与证据包都是本机产物，不入库）。
 - **每轮开跑前**：读 `.critic/benchmark-design.json`，内容作为 `args.benchmarkBrief` 传入；同时从 git 取当前版本/commit 作为 `args.projectRef`（取不到就跳过，不要硬编）。文件不存在或读失败就当没有，照常开跑（脚本会自动调研）。
 - **每轮收结果后**看 `briefStatus`：
-  - `reused`：复用了文件里的基准，**不动文件**；
-  - `researched` / `stale-researched`：本轮重新调研了，把 `benchmarkBrief` **原样写回 `briefPath`**（脚本已带 `revision`/`fetchedAt`/`appliesTo`/`origin`）；
+  - `reused`：复用了文件里的基准，**不动文件**；若同时 `briefPatchFailed` 为真，说明新增参考没研出来（口径里没纳入），下轮会再试；
+  - `researched` / `patched-researched` / `stale-researched`：本轮调研了（全量 / 只补新参考），把 `benchmarkBrief` **原样写回 `briefPath`**（脚本已带 `revision`/`fetchedAt`/`appliesTo`/`origin`/`briefMode`/`changes`）；
   - `unused`：本轮没有基准可用（没给参考作品），不写回。
+- **加参考作品的口径**：往 `args.benchmarkRefs` 里**追加**新作品、并把旧列表原样保留 → 脚本走增量（只补受影响的维，旧维口径不动，旧资料不重查）。若列表里有删减、或 `projectRef` 变了、或旧文件是占位兜底 → 全量重研（旧口径整份覆盖，想留底先手工备份 `.critic/benchmark-design.json`）。
+- **写回前先备份**：任何一次重研/增量都会 +1 修订号并覆盖旧文件；不确定就先复制一份 `benchmark-design.r{N}.json`。`benchmarkBrief.changes` 里留着最近 20 次变更记录（含新增参考与本轮重写的维及理由）。
 - **文件被改坏（JSON 解析失败）**：报错并提示人工把文件改名备份后重研，不要静默当作没有文件。
 
 ### 4.2 迭代循环
@@ -99,4 +102,6 @@ description: 跑一轮游戏设计挑刺。先由只读分诊员判任务类型�
 4. 把本轮返回的 `type` 与 `dimensions` 回传到下一轮（避免维度漂移）；有改动就把 `changes` 一起传。
 5. 直到 `converged` 为真，或 `stopReason` 为 `goal-uncovered` / `evidence-blocked` / `max-rounds` / `stalled` / `insufficient-evidence` / `brief-revised` 时停下交人看。
 
-停因口径：`converged`（全部活跃维达标 + 无必修 + 旧账无未修项 + 无证据阻断 + 目标全部有维度接住）优先；其次是 `goal-uncovered`（有目标没处安放，补证据 / 加维 / 或 `acceptUncovered` 放行）；再其次 `brief-revised`（基准换了，分数不可比）；再其次证据造假阻断；达轮数上限；停滞（分数没提升且无新增必修）；取证不足。`continue` 表示证据还不够判、但也没造假，补证据后继续下一轮。
+停因口径：`converged`（全部活跃维达标 + 无必修 + 旧账无未修项 + 无证据阻断 + 目标全部有维度接住）优先；其次是 `goal-uncovered`（有目标没处安放，补证据 / 加维 / 或 `acceptUncovered` 放行）；再其次 `brief-revised`（基准换了**整套**口径：参考被移除 / 版本变了 / 旧文件是占位，分数全不可比，本轮当校准轮）；再其次证据造假阻断；达轮数上限；停滞（分数没提升且无新增必修）；取证不足。`continue` 表示证据还不够判、但也没造假，补证据后继续下一轮。
+
+**只加参考作品不算换尺子**：`briefMode='patch'` 的轮照常判收敛。旧维口径没动的维度分数仍可比；被新参考改写的维看返回的 `briefAffectedDims`（这些维的旧分别直接当基线）。

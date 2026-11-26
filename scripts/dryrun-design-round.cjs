@@ -435,6 +435,50 @@ const argsByCase = {
       },
     ],
   },
+  // 参考只增不减 → 增量补维，不整份重研；旧维口径原样保留
+  'patch-refs': {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    evidenceDir,
+    feedback: { text: '第3章太难了' },
+    benchmarkRefs: ['MockRefA', 'MockRefB'],
+    players: 4,
+    benchmarkBrief: storedBrief(),
+    round: 2,
+    history: [
+      {
+        round: 1,
+        scores: Object.fromEntries(DIM_KEYS.map((k) => [k, 3])),
+        mustFixCount: 2,
+        evidenceBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+        briefRevision: 3,
+      },
+    ],
+  },
+  // 增量调研没产出 → 沿用旧 brief，不假装新参考已纳入，文件不写回
+  'patch-fail': {
+    goal: '让第三章难度更平滑',
+    projectPath: 'mock/project',
+    evidenceDir,
+    feedback: { text: '第3章太难了' },
+    benchmarkRefs: ['MockRefA', 'MockRefB'],
+    players: 4,
+    benchmarkBrief: storedBrief(),
+    round: 2,
+    history: [
+      {
+        round: 1,
+        scores: Object.fromEntries(DIM_KEYS.map((k) => [k, 3])),
+        mustFixCount: 2,
+        evidenceBlocked: false,
+        hollowDimensions: [],
+        coverageGapCount: 0,
+        briefRevision: 3,
+      },
+    ],
+  },
 }
 
 const harness = `
@@ -455,6 +499,24 @@ function mockBrief() {
     })),
     sources: [],
     caveats: 'mock brief',
+  }
+}
+
+// 增量补维的调研产物：只给改动维，并带 changeReason（无理由的会被当漂移处理）
+function mockBriefPatch() {
+  const dims = ['combat-balance', 'economy-growth']
+  return {
+    dimensions: dims.map((k) => ({
+      key: k,
+      referenceApproach: '新增参考的 mock 做法 ' + k,
+      verifiableCriteria: ['增量核验句 ' + k],
+      deductionPoints: ['增量扣分点 ' + k],
+      targetScore: 4,
+      changeReason: '新增参考 MockRefB 在该维的做法有差异',
+    })),
+    sources: [{ title: 'MockRefB 公开拆解', url: 'https://example.invalid/b' }],
+    caveats: 'mock patch',
+    fetchedAt: '2026-11-27',
   }
 }
 
@@ -738,7 +800,11 @@ async function agent(prompt, opts = {}) {
   if (label.startsWith('汇流')) return mockFinalJudge()
   if (label.startsWith('分诊')) return mockTriage()
   if (label.startsWith('复检')) return mockVerify(prompt)
-  if (label.includes('调研')) return CASE === 'researchfail' ? null : mockBrief()
+  if (label.includes('调研')) {
+    if (CASE === 'researchfail') return null
+    if (label.includes('增量')) return CASE === 'patch-fail' ? null : mockBriefPatch()
+    return mockBrief()
+  }
   if (label.includes('心理机制')) return mockPsych()
   if (label.includes('找茬')) return mockLensFindings(label, prompt)
   if (label.includes('评审')) return mockDetail()
@@ -862,6 +928,52 @@ __run()
         r.progressRecord && r.progressRecord.briefRevision === 2,
         'oldhistory: progressRecord.briefRevision should be current revision'
       )
+    } else if (CASE === 'patch-refs') {
+      assert(r.briefStatus === 'patched-researched', 'patch-refs: should be patched-researched, got ' + r.briefStatus)
+      assert(r.briefMode === 'patch', 'patch-refs: briefMode should be patch, got ' + r.briefMode)
+      assert(r.briefRevision === 4, 'patch-refs: revision should be 4, got ' + r.briefRevision)
+      assert(
+        r.benchmarkBrief && r.benchmarkBrief.refs.length === 2 && r.benchmarkBrief.refs.includes('MockRefB'),
+        'patch-refs: refs should include both'
+      )
+      assert(
+        Array.isArray(r.briefAffectedDims) &&
+          r.briefAffectedDims.length === 2 &&
+          r.briefAffectedDims.includes('combat-balance') &&
+          r.briefAffectedDims.includes('economy-growth'),
+        'patch-refs: briefAffectedDims should be the two rewritten dims, got ' + JSON.stringify(r.briefAffectedDims)
+      )
+      assert(r.stopReason !== 'brief-revised', 'patch-refs: incremental round must not stop as brief-revised')
+      const patchCalls = agentCalls.filter((c) => c.label.includes('增量')).length
+      const fullCalls = agentCalls.filter((c) => c.label === '调研:基准brief').length
+      assert(patchCalls === 1, 'patch-refs: incremental research should run once, got ' + patchCalls)
+      assert(fullCalls === 0, 'patch-refs: full research must not run, got ' + fullCalls)
+      const kept = (r.benchmarkBrief?.dimensions ?? []).find((d) => d.key === 'level-topology')
+      assert(
+        kept && kept.referenceApproach === '文件里的参考做法 level-topology',
+        'patch-refs: untouched dim must keep stored wording, got ' + kept?.referenceApproach
+      )
+      const patched = (r.benchmarkBrief?.dimensions ?? []).find((d) => d.key === 'combat-balance')
+      assert(
+        patched && String(patched.referenceApproach).includes('新增参考'),
+        'patch-refs: rewritten dim should carry new wording, got ' + patched?.referenceApproach
+      )
+      const ch = (r.benchmarkBrief?.changes ?? []).slice(-1)[0]
+      assert(
+        ch && ch.mode === 'patch' && (ch.refsAdded ?? []).includes('MockRefB') &&
+          (ch.rewrittenDims ?? []).some((d) => d.key === 'combat-balance' && d.reason),
+        'patch-refs: changes should record patch mode, added refs and reasons'
+      )
+    } else if (CASE === 'patch-fail') {
+      assert(r.briefStatus === 'reused', 'patch-fail: should fall back to reused, got ' + r.briefStatus)
+      assert(r.briefPatchFailed === true, 'patch-fail: briefPatchFailed should be true')
+      assert(r.briefRevision === 3, 'patch-fail: revision must not bump, got ' + r.briefRevision)
+      assert(
+        r.benchmarkBrief && r.benchmarkBrief.dimensions.length === 11,
+        'patch-fail: old brief dims should be kept and normalized'
+      )
+      const patchCalls = agentCalls.filter((c) => c.label.includes('增量')).length
+      assert(patchCalls === 1, 'patch-fail: incremental research should be attempted once, got ' + patchCalls)
     } else {
       assert(!r.error, 'unexpected error: ' + r.error)
       if (CASE === 'normal') {

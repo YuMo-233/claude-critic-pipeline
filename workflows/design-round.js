@@ -41,7 +41,7 @@ export const meta = {
   description: '一轮游戏设计挑刺：分诊（判任务类型与维度） → 基准调研 → 复检（可选，核对上轮修复） → 逐维找茬（含玩家反馈的心理机制解析）+ 细节评委 → 分片判卷与汇流 → 扣分表与收敛判定。证据由调用方预先用 critic-evidence 备好证据包。只挑刺不改设计。',
   phases: [
     { title: '分诊', detail: '无显式 type/dimensions 时，只读勘察判任务类型、选中维度并把目标逐条归位' },
-    { title: '基准调研', detail: '无基准 brief 且有参考作品时，把它转成逐维可核验口径' },
+    { title: '基准调研', detail: '无基准 brief 且有参考作品时，把它转成逐维可核验口径；仅新增参考时做增量补维' },
     { title: '复检', detail: 'mode=verify 时逐条核对上轮必修项现状，并把本轮改动映射到受影响维度' },
     { title: '找茬', detail: '按维度并行找茬并自评扣分；玩家反馈一路做心理机制解析；细节评委审假达标与证据造假' },
     { title: '判卷', detail: '每镜头一片分片判卷（引用式），脚本按编号回填正文' },
@@ -597,14 +597,6 @@ let evidence = null
 // 读写由调度员负责（见 SKILL.md）；脚本决定本轮是复用文件里的还是重新调研。
 const BRIEF_PATH = '.critic/benchmark-design.json'
 
-function refsKey(refs) {
-  return (Array.isArray(refs) ? refs : [])
-    .map((r) => String(r).trim())
-    .filter(Boolean)
-    .sort()
-    .join('|')
-}
-
 // 只留本档认识的维；缺失的按本档默认口径补齐并提示
 function normalizeBrief(raw, keys) {
   const known = new Set(DIMENSIONS.map((d) => d.key))
@@ -650,42 +642,81 @@ const projectRef = A?.projectRef ? String(A.projectRef).trim() : ''
 
 // 新鲜度只认变更触发：参考作品集合变了，或项目版本与 appliesTo 不一致。
 // fetchedAt 只做记录，不参与过期判定（参考作品不会随时间变化，硬设天数只会白跑调研）。
+// 只增不减的参考变化走增量（patch）：旧口径原样保留，只补被新增参考影响的维度；
+// 有删减 / 版本变化 / 旧 brief 是占位兜底 → 全量重研（删参考会动摇已有维的依据，不能只补不删）。
 let briefStatus = benchmarkRefs.length ? 'researched' : 'unused'
 let rejectedBriefRevision = null
+let patchRequest = null
+let briefAffectedDims = []
+let briefPatchFailed = false
 
 if (brief) {
   const origin = brief.origin === 'research' ? 'research' : 'fallback'
-  const refsChanged = refsKey(brief.refs) !== refsKey(benchmarkRefs)
+  const oldRefs = (Array.isArray(brief.refs) ? brief.refs : [])
+    .map((r) => String(r).trim())
+    .filter(Boolean)
+  const addedRefs = benchmarkRefs.filter((r) => !oldRefs.includes(r))
+  const removedRefs = oldRefs.filter((r) => !benchmarkRefs.includes(r))
   const versionChanged =
     !!projectRef && !!brief.appliesTo && projectRef !== String(brief.appliesTo)
-  if (origin !== 'research' || refsChanged || versionChanged) {
+  if (origin !== 'research' || versionChanged || oldRefs.length === 0 || removedRefs.length > 0) {
     rejectedBriefRevision = Number.isFinite(Number(brief.revision)) ? Number(brief.revision) : null
     const why =
       origin !== 'research'
         ? 'brief 来源是占位兜底（origin=fallback）'
-        : refsChanged
-          ? '参考作品集合变了'
-          : '项目版本与 appliesTo 不一致'
+        : versionChanged
+          ? '项目版本与 appliesTo 不一致'
+          : oldRefs.length === 0
+            ? '旧 brief 没有记录参考作品'
+            : `参考作品被移除（${removedRefs.join('、')}）`
     if (benchmarkRefs.length) {
-      log(`brief 不可复用（${why}），本轮重新调研。`)
+      log(`brief 不可复用（${why}），本轮全量重研。`)
       briefStatus = 'stale-researched'
     } else {
       log(`brief 不可复用（${why}），且本轮未给参考作品，无法重研，退化为通用质量线。`)
       briefStatus = 'unused'
     }
     brief = null
+  } else if (addedRefs.length > 0) {
+    // 增量：只补新增参考，旧维口径不动；调研员可重写旧维但必须写改动理由
+    patchRequest = { base: brief, addedRefs }
+    briefStatus = 'patched-researched'
+    log(
+      `brief 增量更新：新增参考 ${addedRefs.length} 部（${addedRefs.join('、')}），` +
+        '只补受影响维度，其余沿用旧口径（不整份重研）。'
+    )
   } else {
     brief = { ...brief, dimensions: normalizeBrief(brief, activeDims.map((d) => d.key)) }
     briefStatus = 'reused'
   }
 }
 
-function stampBrief(raw) {
-  const baseRev = Number.isFinite(rejectedBriefRevision)
-    ? rejectedBriefRevision
-    : Number.isFinite(Number(prevRecord?.briefRevision))
-      ? Number(prevRecord.briefRevision)
+function stampBrief(raw, opts = {}) {
+  const patchMode = opts.mode === 'patch'
+  const baseRev = patchMode
+    ? Number.isFinite(Number(opts.baseRevision))
+      ? Number(opts.baseRevision)
       : 0
+    : Number.isFinite(rejectedBriefRevision)
+      ? rejectedBriefRevision
+      : Number.isFinite(Number(prevRecord?.briefRevision))
+        ? Number(prevRecord.briefRevision)
+        : 0
+  const prevChanges = (patchMode ? opts.baseChanges : Array.isArray(raw?.changes) ? raw.changes : [])
+    .filter((c) => c && typeof c === 'object')
+    .slice(-19)
+  const change =
+    patchMode || rejectedBriefRevision !== null
+      ? {
+          at: typeof raw?.fetchedAt === 'string' ? raw.fetchedAt : '',
+          revision: baseRev + 1,
+          mode: patchMode ? 'patch' : 'full',
+          refsAdded: patchMode ? (opts.addedRefs ?? []) : benchmarkRefs.slice(),
+          refsRemoved: patchMode ? [] : (opts.removedRefs ?? []),
+          rewrittenDims: patchMode ? (opts.rewrittenDims ?? []) : [],
+        }
+      : null
+  const changes = change ? [...prevChanges, change] : prevChanges
   return {
     ...raw,
     refs: benchmarkRefs.slice(),
@@ -693,6 +724,66 @@ function stampBrief(raw) {
     fetchedAt: typeof raw?.fetchedAt === 'string' ? raw.fetchedAt : '',
     appliesTo: projectRef || String(raw?.appliesTo ?? ''),
     origin: 'research',
+    briefMode: patchMode ? 'patch' : 'full',
+    changes,
+  }
+}
+
+// 把增量 patch 合并进旧 brief：patch 列到的维用它，没列的维保留旧口径
+function mergeBriefPatch(base, patch) {
+  const keys = activeDims.map((d) => d.key)
+  const baseDims = Array.isArray(base?.dimensions) ? base.dimensions : []
+  const patchDims = Array.isArray(patch?.dimensions) ? patch.dimensions : []
+  const rewrittenDims = []
+  const dimensions = keys
+    .map((key) => {
+      const p = patchDims.find((d) => d && String(d.key) === key)
+      if (p) {
+        rewrittenDims.push({
+          key,
+          reason: String(p.changeReason ?? '').trim() || '（调研员未写改动理由）',
+        })
+        return {
+          key,
+          referenceApproach: p.referenceApproach,
+          verifiableCriteria: p.verifiableCriteria,
+          deductionPoints: p.deductionPoints,
+          targetScore: p.targetScore,
+        }
+      }
+      return baseDims.find((d) => d && String(d.key) === key)
+    })
+    .filter(Boolean)
+  const seenSources = new Set()
+  const sources = []
+  for (const s of [
+    ...(Array.isArray(base?.sources) ? base.sources : []),
+    ...(Array.isArray(patch?.sources) ? patch.sources : []),
+  ]) {
+    if (!s || typeof s !== 'object') continue
+    const k = `${String(s.title ?? '').trim()}|${String(s.url ?? '').trim()}`
+    if (seenSources.has(k)) continue
+    seenSources.add(k)
+    sources.push(s)
+  }
+  const caveats = [
+    String(base?.caveats ?? '').trim(),
+    String(patch?.caveats ?? '').trim(),
+  ]
+    .filter(Boolean)
+    .join('；')
+  return {
+    brief: {
+      ...base,
+      dimensions,
+      sources,
+      caveats: caveats.slice(0, 1200),
+      fetchedAt:
+        typeof patch?.fetchedAt === 'string' && patch.fetchedAt.trim()
+          ? patch.fetchedAt.trim()
+          : String(base?.fetchedAt ?? ''),
+    },
+    rewrittenDims,
   }
 }
 
@@ -817,6 +908,85 @@ ${activeDims.map((d) => `- ${d.key}（${d.name}）：${d.prompt}`).join('\n')}
 ${knownBlock}
 严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
 
+const BRIEF_PATCH_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['dimensions', 'sources', 'caveats', 'fetchedAt'],
+  properties: {
+    dimensions: {
+      type: 'array',
+      description:
+        '只列你改动过的维：新增参考影响的维、以及你认为旧口径需要修正的维。其余维一律不要列（会原样保留旧口径）',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['key', 'referenceApproach', 'verifiableCriteria', 'deductionPoints', 'targetScore', 'changeReason'],
+        properties: {
+          key: { type: 'string', enum: DIMENSIONS.map((d) => d.key) },
+          referenceApproach: { type: 'string', description: '参考作品在该维做对了什么' },
+          verifiableCriteria: {
+            type: 'array',
+            description: '能落到数值/模拟输出/代码/公开设计文档的判断句',
+            items: { type: 'string' },
+          },
+          deductionPoints: {
+            type: 'array',
+            description: '差在哪会掉分的具体扣分点',
+            items: { type: 'string' },
+          },
+          targetScore: { type: 'number', description: '该维目标分，默认 4' },
+          changeReason: { type: 'string', description: '为什么这一维要改：依据是哪部新参考的哪条公开资料' },
+        },
+      },
+    },
+    sources: {
+      type: 'array',
+      description: '本次为改动维查到的公开出处；没有就空数组',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'url', 'note'],
+        properties: {
+          title: { type: 'string' },
+          url: { type: 'string' },
+          note: { type: 'string' },
+        },
+      },
+    },
+    caveats: { type: 'string', description: '资料不足/把握不大的地方，如实写' },
+    fetchedAt: {
+      type: 'string',
+      description: '本次调研日期，格式 YYYY-MM-DD（用你已知的当前日期）',
+    },
+  },
+}
+
+const BRIEF_PATCH_PROMPT = `你是设计档的基准调研员（增量）。调用方往参考名单里加了新作品，旧的评分口径大部分仍然成立，你的任务是**只补新参考带来的差异**，不整份重查。
+
+【本次新增的参考作品】
+${(patchRequest?.addedRefs ?? []).map((r, i) => `${i + 1}. ${r}`).join('\n')}
+
+【旧口径全文（这是你的底稿，不是让你重抄）】
+${briefRows(activeDims.map((d) => d.key))}
+${(Array.isArray(patchRequest?.base?.sources) ? patchRequest.base.sources : [])
+  .map((s) => `- ${String(s?.title ?? '').trim()}（${String(s?.url ?? '').trim()}）：${String(s?.note ?? '').trim()}`)
+  .join('\n')}
+
+${ctxBlock}
+【本轮活跃维度】
+${activeDims.map((d) => `- ${d.key}（${d.name}）：${d.prompt}`).join('\n')}
+
+【要求】
+- 只在 dimensions 里列**你确实要改的维**：新增参考明显改变了该维做法的，或旧口径依据的资料站不住需要修正的。**没把握就别动，不列就等于保留旧口径。**
+- 每改一维必须写 changeReason，说清依据是哪部新参考的哪条公开资料；空理由的改动调度员会当漂移处理。
+- referenceApproach 要写清新旧参考各自的做法差异，verifiableCriteria 与 deductionPoints 要能直接落到数值/模拟/代码，targetScore 默认 4。
+- 不要碰与新增参考无关的维度；不要整份重查旧参考（你已有旧口径，浪费 token 无意义）。
+- sources 只放本次为改动维真看过的公开页面；没看就空数组。不得下载、复制、搬运参考作品的素材或数值表。
+- caveats 如实写；fetchedAt 用你已知的当前日期，格式 YYYY-MM-DD。
+
+${knownBlock}
+严格按 schema 输出，**必须调用 StructuredOutput，否则整条流程会中断**。`
+
 // 证据包取法：各角色按自己的关键词自取切片，正文不内联
 function evidenceBlock(keywords, roleNote) {
   const kw = (Array.isArray(keywords) ? keywords : [keywords]).filter(Boolean)
@@ -829,16 +999,59 @@ ${kw.map((k) => `- query: "${k}"`).join('\n')}
 不要整包读回，取过的不重复取。`
 }
 
-const researchRaw = brief || !benchmarkRefs.length
-  ? null
-  : await agent(RESEARCH_PROMPT, {
-      label: '调研:基准brief',
-      phase: '基准调研',
-      agentType: 'critic-pipeline:critic-design-researcher',
-      schema: BRIEF_SCHEMA,
-    })
+// 增量轮只派一次「补差异」调研，不重查旧参考；全量轮行为不变
+let researchRaw = null
+let patchRaw = null
+if (patchRequest) {
+  patchRaw = await agent(BRIEF_PATCH_PROMPT, {
+    label: '调研:基准brief增量',
+    phase: '基准调研',
+    agentType: 'critic-pipeline:critic-design-researcher',
+    schema: BRIEF_PATCH_SCHEMA,
+  })
+} else if (!brief && benchmarkRefs.length) {
+  researchRaw = await agent(RESEARCH_PROMPT, {
+    label: '调研:基准brief',
+    phase: '基准调研',
+    agentType: 'critic-pipeline:critic-design-researcher',
+    schema: BRIEF_SCHEMA,
+  })
+}
 
-if (researchRaw) {
+if (patchRaw && patchRequest) {
+  const merged = mergeBriefPatch(patchRequest.base, patchRaw)
+  briefAffectedDims = merged.rewrittenDims.map((d) => d.key)
+  brief = stampBrief(
+    { ...merged.brief, dimensions: normalizeBrief(merged.brief, activeDims.map((d) => d.key)) },
+    {
+      mode: 'patch',
+      baseRevision: patchRequest.base?.revision,
+      baseChanges: Array.isArray(patchRequest.base?.changes) ? patchRequest.base.changes : [],
+      addedRefs: patchRequest.addedRefs,
+      rewrittenDims: merged.rewrittenDims,
+    }
+  )
+  if (!briefAffectedDims.length) {
+    log('基准 brief 增量完成：新增参考未改变任何维口径，全部沿用旧 brief。')
+  } else {
+    const names = briefAffectedDims
+      .map((k) => DIMENSIONS.find((d) => d.key === k)?.name ?? k)
+      .join('、')
+    log(
+      `基准 brief 增量完成：重写 ${briefAffectedDims.length} 维（${names}），其余沿用旧口径（revision ${brief.revision}）。`
+    )
+  }
+} else if (patchRequest) {
+  // 增量调研没产出：沿用旧 brief（旧维仍可用），但不假装新增参考已纳入；文件不写回，下轮再试
+  brief = {
+    ...patchRequest.base,
+    dimensions: normalizeBrief(patchRequest.base, activeDims.map((d) => d.key)),
+    briefMode: 'unchanged',
+  }
+  briefPatchFailed = true
+  briefStatus = 'reused'
+  log('增量调研未产出，本轮沿用旧 brief（新增参考未纳入评分口径，下轮会再试）。')
+} else if (researchRaw) {
   brief = stampBrief({
     ...researchRaw,
     dimensions: normalizeBrief(researchRaw, activeDims.map((d) => d.key)),
@@ -1889,11 +2102,21 @@ const prevBriefRevision = Number.isFinite(Number(prevRecord?.briefRevision))
 // 旧条目缺 briefRevision 视为「版本不明」，不参与判定（向前兼容）
 const briefChanged =
   briefRevisionNow !== null && prevBriefRevision !== null && briefRevisionNow !== prevBriefRevision
+// 增量轮只改了几维，其余口径没动，分数仍可比 → 不停轮，只标记受影响的维；
+// 全量重研（参考被移除 / 版本变了 / 旧 brief 是兜底）等于换了整套尺子 → 仍然停轮
+const briefRebaselined = briefChanged && brief?.briefMode !== 'patch'
+// 对外统一口径：增量轮只列重写的维；全量重研且确实是换尺子时，全部活跃维都不可比
+const briefAffectedAll =
+  brief?.briefMode === 'patch'
+    ? briefAffectedDims
+    : briefRebaselined
+      ? activeDims.map((d) => d.key)
+      : []
 
 let stopReason = 'continue'
 if (converged) stopReason = 'converged'
 else if (goalUncovered) stopReason = 'goal-uncovered'
-else if (briefChanged) stopReason = 'brief-revised'
+else if (briefRebaselined) stopReason = 'brief-revised'
 else if (evidenceBlocked) stopReason = 'evidence-blocked'
 else if (round >= maxRounds) stopReason = 'max-rounds'
 else if (stagnated) stopReason = 'stalled'
@@ -1928,8 +2151,10 @@ const progressRecord = {
   })),
   // 未覆盖目标跨轮追账：不清空就继续拦收敛，除非调用方明确 acceptUncovered
   uncoveredGoals,
-  // 本轮所用基准修订号：调度员记进 history，下次据此判 brief-revised
+  // 本轮所用基准修订号：调度员记进 history；增量轮的分数不可比范围见 briefAffectedDims
   briefRevision: briefRevisionNow,
+  briefMode: brief?.briefMode ?? 'full',
+  briefAffectedDims: briefAffectedAll,
   evidenceBlocked,
   hollowDimensions: [...hollowDims],
   coverageGapCount: coverage.length,
@@ -2077,6 +2302,11 @@ return {
   briefStatus,
   briefPath: BRIEF_PATH,
   briefRevision: briefRevisionNow,
+  // 基准本轮怎么来的：full 全量重研 / patch 增量补维 / unchanged 增量失败沿用旧 brief / reused 原样复用
+  briefMode: brief?.briefMode ?? 'full',
+  // 增量轮里被新参考重写口径的维度（这些维的旧分数不可比；全量轮即全部活跃维）
+  briefAffectedDims: briefAffectedAll,
+  briefPatchFailed,
   evidence,
   dimensions: dimResults,
   confirmed,

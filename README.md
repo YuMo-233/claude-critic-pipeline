@@ -146,6 +146,7 @@
 ```
 ① 分诊（可跳过）    只读勘察判任务类型 + 评分维度 + 目标逐条归位 + 不适用维度
 ② 基准调研（可选）  无基准 brief 且给了 benchmarkRefs 时先跑：把参考作品转成可核验口径
+                    参考只增不减时走增量：只补新参考影响的维，旧口径不重查
 ③b 复检（verify）   核对员逐条判上轮必修项 + 把改动映射到受影响维度
 ④ 找茬             按组并行镜头（depth=full 拆逐维；verify 只跑涉改维）挑刺并自评扣分
                     玩家反馈维单独走心理机制解析；细节评委同批并行：审假达标 + 证据造假 + 阈值漂移
@@ -157,7 +158,9 @@
 
 **评分沿用扣分表**：每维满分 5，从 5 往下扣；每笔扣分必须写清「差什么 / 差距多大 / 证据在哪」，且 `anchorKind` 只能是 `numeric-config` / `sim-output` / `code` / `benchmark`——枚举里物理上没有 `feedback`，玩家原话冒充结构证据会被细节评委拦下。
 
-**收敛**：全部活跃维达标（默认 4）+ 无必修项 + 旧账无未修项 + 无证据造假阻断 + 目标全部有维度接住。停因优先级：`已收敛` → `目标未覆盖` → `基准换版` → `证据造假阻断` → `达轮数上限` → `停滞` → `取证不足`。
+**收敛**：全部活跃维达标（默认 4）+ 无必修项 + 旧账无未修项 + 无证据造假阻断 + 目标全部有维度接住。停因优先级：`已收敛` → `目标未覆盖` → `基准换版` → `证据造假阻断` → `达轮数上限` → `停滞` → `取证不足`。基准换版只在**整套尺子换了**时才拦（参考被移除 / 版本变了 / 旧文件是占位）；只往名单里加参考属于增量补维，照常判收敛。
+
+**基准增量**：`benchmarkRefs` 只增不减且版本未变 → 脚本派一次「补差异」调研（`briefMode='patch'`），只重写被新参考影响的维，其余维沿用旧口径；调研员改旧维必须写 `changeReason`。返回 `briefAffectedDims` 列出本轮口径变了的维（这些维旧分不可比），`benchmarkBrief.changes` 留最近 20 次变更记录。有删减 / 版本变化 / 旧文件为占位 → 全量重研（`briefMode='full'`），旧口径会被整份覆盖，想留底先手工备份。
 
 **参数**：
 
@@ -180,7 +183,7 @@
 
 证据来源（`prepare_evidence` 的 `run` / `checks` / `codePaths`，外加 `feedback` / `benchmarkRefs`）至少给一类；`evidenceDir` 本身永远必填——取证在 workflow 外做完才开跑，缺了就明确报错，不静默降级。
 
-**返回**：`type` / `triage` / `triageFallback`、`goalCoverage` / `uncoveredGoals` / `acceptedUncovered`、`mode` / `verifyFallback` / `verifier` / `touchedDims` / `carriedDims`、`scope`、`notApplicable`、`dimensions`（分数/目标/扣分项/优点/是否假达标/是否沿用上轮/是否不适用）、`mustFix`/`shouldFix`/`minor`、`evidenceIntegrity`（造假硬阻断）、`unverifiedFeedback`、`coverage`、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`、`benchmarkBrief`、`briefStatus`/`briefPath`/`briefRevision`、`handoff`（未达标维附参考做法与出处；另附未覆盖目标与复检结论）。
+**返回**：`type` / `triage` / `triageFallback`、`goalCoverage` / `uncoveredGoals` / `acceptedUncovered`、`mode` / `verifyFallback` / `verifier` / `touchedDims` / `carriedDims`、`scope`、`notApplicable`、`dimensions`（分数/目标/扣分项/优点/是否假达标/是否沿用上轮/是否不适用）、`mustFix`/`shouldFix`/`minor`、`evidenceIntegrity`（造假硬阻断）、`unverifiedFeedback`、`coverage`、`converged`/`stopReason`/`stuckDimensions`、`progressRecord`、`benchmarkBrief`、`briefStatus`/`briefPath`/`briefRevision`、`briefMode`/`briefAffectedDims`/`briefPatchFailed`、`handoff`（未达标维附参考做法与出处；另附未覆盖目标与复检结论）。
 
 ## 安装
 
@@ -310,7 +313,7 @@ critic-pipeline/
 - 零成本干跑（不调真实子代理，只验参数流动、分片判卷合并与收敛判定）：
   - `node scripts/dryrun-critic-round.cjs <case>`：normal / cleanup / explicit-lenses / nodiff / escalate / dropall
   - `node scripts/dryrun-quality-round.cjs <case>`：normal / plagiarism / converged / stalled / noref / nocapture / researchfail / lensfail / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
-  - `node scripts/dryrun-design-round.cjs <case>`（30 个）：normal / researchfail / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified / triage-map / triage-fallback / goal-uncovered / accept-uncovered / scope / not-applicable / cap-findings / verify-fixed / verify-still / verify-fallback / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory
+  - `node scripts/dryrun-design-round.cjs <case>`（32 个）：normal / researchfail / solo-nofeedback / forced-dim / nogoal / noevidence / simfail / thresholddrift / evidenceblocked / converged / stalled / psych-unverified / triage-map / triage-fallback / goal-uncovered / accept-uncovered / scope / not-applicable / cap-findings / verify-fixed / verify-still / verify-fallback / fresh / reuse / stale-refs / stale-version / fallback / partial / briefrevised / oldhistory / patch-refs / patch-fail
 - `node scripts/selftest-mcp.mjs`：critic-evidence 五工具自测（造临时玩具项目，起 stdio server 全链路跑一遍）
 - `node scripts/selftest-browse.mjs [url]`：critic-browse 自测（默认抓一个 Cloudflare 挡住的 wiki 页，验证真能拿到正文）
 - ADR：`D:\app\YuMoBox\docs\adr\0055-critic-pipeline-workflow.md`
